@@ -9,6 +9,11 @@
 !vx2 = !amdgcn.vgpr_range<[? + 2]>
 !vx4 = !amdgcn.vgpr_range<[? + 4]>
 
+!index_pair = !aster_utils.struct<i: index, j: index>
+!index_descriptor_2d = !aster_utils.struct<i: index, j: index, stride: index, elt_size_b: index>
+!index_descriptor_2level_2d = !aster_utils.struct<i: index, j: index, ii: index, jj: index, stride: index, elt_size_b: index>
+!index_descriptor_3level_2d = !aster_utils.struct<i: index, j: index, ii: index, jj: index, iii: index, jjj: index, stride: index, elt_size_b: index>
+
 amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<cdna3> {
   //===--------------------------------------------------------------------===//
   // Library function declarations (provided by amdgcn-preload-library pass)
@@ -16,18 +21,18 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
   func.func private @lane_id() -> index
   func.func private @wave_id() -> index
   func.func private @wave_count() -> index
-  func.func private @lane_delinearize_2d(index, index) -> (index, index)
-  func.func private @block_id_x_delinearize_2d(index, index) -> (index, index)
-  func.func private @tiled_grid_partition_2d(index, index, index, index) -> (index, index)
-  func.func private @matrix_offset(index, index, index, index) -> !v
-  func.func private @tiled_matrix_offset(index, index, index, index, index, index) -> !v
-  func.func private @tiledx2_matrix_offset(index, index, index, index, index, index, index, index) -> !v
-  func.func private @mfma_index_A_16x16xf16() -> (index, index)
-  func.func private @mfma_index_B_16x16xf16() -> (index, index)
-  func.func private @mfma_index_C_16x16xf32() -> (index, index)
-  func.func private @swizzled_mfma_index_A_16x16xf16() -> (index, index)
-  func.func private @swizzled_mfma_index_B_16x16xf16() -> (index, index)
-  func.func private @swizzled_mfma_index_C_16x16xf32() -> (index, index)
+  func.func private @lane_delinearize_2d(!index_pair) -> !index_pair
+  func.func private @block_id_x_delinearize_2d(!index_pair) -> !index_pair
+  func.func private @tiled_grid_partition_2d(!index_pair, !index_pair) -> !index_pair
+  func.func private @matrix_offset(!index_descriptor_2d) -> !v
+  func.func private @tiled_matrix_offset(!index_descriptor_2level_2d) -> !v
+  func.func private @tiledx2_matrix_offset(!index_descriptor_3level_2d) -> !v
+  func.func private @mfma_index_A_16x16xf16() -> !index_pair
+  func.func private @mfma_index_B_16x16xf16() -> !index_pair
+  func.func private @mfma_index_C_16x16xf32() -> !index_pair
+  func.func private @swizzled_mfma_index_A_16x16xf16() -> !index_pair
+  func.func private @swizzled_mfma_index_B_16x16xf16() -> !index_pair
+  func.func private @swizzled_mfma_index_C_16x16xf32() -> !index_pair
   func.func private @index_bxmxnxk_16x16x16_f16f16f32(index, index, index, index, index, index, index, index, index) -> index
 
   //===--------------------------------------------------------------------===//
@@ -129,7 +134,9 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
 
     %c8 = arith.constant 8 : index
-    %i, %j = func.call @lane_delinearize_2d(%c8, %c8) : (index, index) -> (index, index)
+    %dims = aster_utils.struct_create(%c8, %c8) : (index, index) -> !index_pair
+    %result = func.call @lane_delinearize_2d(%dims) : (!index_pair) -> !index_pair
+    %i, %j = aster_utils.struct_extract %result ["i", "j"] : !index_pair -> index, index
     %i_i32 = arith.index_cast %i : index to i32
     %j_i32 = arith.index_cast %j : index to i32
     %c0 = arith.constant 0 : index
@@ -147,7 +154,9 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
 
     %c2 = arith.constant 2 : index
     %c4 = arith.constant 4 : index
-    %i, %j = func.call @block_id_x_delinearize_2d(%c2, %c4) : (index, index) -> (index, index)
+    %dims = aster_utils.struct_create(%c2, %c4) : (index, index) -> !index_pair
+    %result = func.call @block_id_x_delinearize_2d(%dims) : (!index_pair) -> !index_pair
+    %i, %j = aster_utils.struct_extract %result ["i", "j"] : !index_pair -> index, index
 
     %i_i32 = arith.index_cast %i : index to i32
     %j_i32 = arith.index_cast %j : index to i32
@@ -170,8 +179,10 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
     %c64 = arith.constant 64 : index
     %c32 = arith.constant 32 : index
-    %i, %j = func.call @tiled_grid_partition_2d(%c64, %c64, %c32, %c32)
-      : (index, index, index, index) -> (index, index)
+    %sizes = aster_utils.struct_create(%c64, %c64) : (index, index) -> !index_pair
+    %tile_sizes = aster_utils.struct_create(%c32, %c32) : (index, index) -> !index_pair
+    %result = func.call @tiled_grid_partition_2d(%sizes, %tile_sizes) : (!index_pair, !index_pair) -> !index_pair
+    %i, %j = aster_utils.struct_extract %result ["i", "j"] : !index_pair -> index, index
     %i_i32 = arith.index_cast %i : index to i32
     %j_i32 = arith.index_cast %j : index to i32
 
@@ -195,8 +206,8 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %c4 = arith.constant 4 : index
     %i = affine.apply affine_map<()[tid] -> (tid floordiv 8)>()[%tid]
     %j = affine.apply affine_map<()[tid] -> (tid mod 8)>()[%tid]
-    %off_vgpr = func.call @matrix_offset(%i, %j, %c64, %c4)
-      : (index, index, index, index) -> !v
+    %desc = aster_utils.struct_create(%i, %j, %c64, %c4) : (index, index, index, index) -> !index_descriptor_2d
+    %off_vgpr = func.call @matrix_offset(%desc) : (!index_descriptor_2d) -> !v
 
     // Store the offset at thread position
     %out_offset_index = affine.apply affine_map<()[tid] -> (tid * 4)>()[%tid]
@@ -222,8 +233,8 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %c4 = arith.constant 4 : index
     %ii = affine.apply affine_map<()[tid] -> (tid floordiv 8)>()[%tid]
     %jj = affine.apply affine_map<()[tid] -> (tid mod 8)>()[%tid]
-    %off_vgpr = func.call @tiled_matrix_offset(%c0, %c0, %ii, %jj, %c64, %c4)
-      : (index, index, index, index, index, index) -> !v
+    %desc = aster_utils.struct_create(%c0, %c0, %ii, %jj, %c64, %c4) : (index, index, index, index, index, index) -> !index_descriptor_2level_2d
+    %off_vgpr = func.call @tiled_matrix_offset(%desc) : (!index_descriptor_2level_2d) -> !v
 
     // Store the offset at thread position
     %out_offset_index = affine.apply affine_map<()[tid] -> (tid * 4)>()[%tid]
@@ -249,8 +260,8 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %c4 = arith.constant 4 : index
     %iii = affine.apply affine_map<()[tid] -> (tid floordiv 8)>()[%tid]
     %jjj = affine.apply affine_map<()[tid] -> (tid mod 8)>()[%tid]
-    %off_vgpr = func.call @tiledx2_matrix_offset(%c0, %c0, %c0, %c0, %iii, %jjj, %c64, %c4)
-      : (index, index, index, index, index, index, index, index) -> !v
+    %desc = aster_utils.struct_create(%c0, %c0, %c0, %c0, %iii, %jjj, %c64, %c4) : (index, index, index, index, index, index, index, index) -> !index_descriptor_3level_2d
+    %off_vgpr = func.call @tiledx2_matrix_offset(%desc) : (!index_descriptor_3level_2d) -> !v
 
     // Store the offset at thread position
     %out_offset_index = affine.apply affine_map<()[tid] -> (tid * 4)>()[%tid]
@@ -269,7 +280,8 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %c0 = arith.constant 0 : index
     %out_ptr = amdgcn.load_arg 0 : !sx2
     amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
-    %row, %col = func.call @mfma_index_A_16x16xf16() : () -> (index, index)
+    %idx = func.call @mfma_index_A_16x16xf16() : () -> !index_pair
+    %row, %col = aster_utils.struct_extract %idx ["i", "j"] : !index_pair -> index, index
     %row_i32 = arith.index_cast %row : index to i32
     %col_i32 = arith.index_cast %col : index to i32
     func.call @store_pair_at_tid(%row_i32, %col_i32, %out_ptr, %c0) : (i32, i32, !sx2, index) -> ()
@@ -283,7 +295,8 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %c0 = arith.constant 0 : index
     %out_ptr = amdgcn.load_arg 0 : !sx2
     amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
-    %row, %col = func.call @mfma_index_B_16x16xf16() : () -> (index, index)
+    %idx = func.call @mfma_index_B_16x16xf16() : () -> !index_pair
+    %row, %col = aster_utils.struct_extract %idx ["i", "j"] : !index_pair -> index, index
     %row_i32 = arith.index_cast %row : index to i32
     %col_i32 = arith.index_cast %col : index to i32
     func.call @store_pair_at_tid(%row_i32, %col_i32, %out_ptr, %c0) : (i32, i32, !sx2, index) -> ()
@@ -297,7 +310,8 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %c0 = arith.constant 0 : index
     %out_ptr = amdgcn.load_arg 0 : !sx2
     amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
-    %row, %col = func.call @mfma_index_C_16x16xf32() : () -> (index, index)
+    %idx = func.call @mfma_index_C_16x16xf32() : () -> !index_pair
+    %row, %col = aster_utils.struct_extract %idx ["i", "j"] : !index_pair -> index, index
     %row_i32 = arith.index_cast %row : index to i32
     %col_i32 = arith.index_cast %col : index to i32
     func.call @store_pair_at_tid(%row_i32, %col_i32, %out_ptr, %c0) : (i32, i32, !sx2, index) -> ()
@@ -311,7 +325,8 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %c0 = arith.constant 0 : index
     %out_ptr = amdgcn.load_arg 0 : !sx2
     amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
-    %swizzled_row, %swizzled_col = func.call @swizzled_mfma_index_A_16x16xf16() : () -> (index, index)
+    %idx = func.call @swizzled_mfma_index_A_16x16xf16() : () -> !index_pair
+    %swizzled_row, %swizzled_col = aster_utils.struct_extract %idx ["i", "j"] : !index_pair -> index, index
     %swizzled_col_i32 = arith.index_cast %swizzled_col : index to i32
     func.call @store_at_tid(%swizzled_col_i32, %out_ptr, %c0) : (i32, !sx2, index) -> ()
     amdgcn.end_kernel
@@ -324,7 +339,8 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %c0 = arith.constant 0 : index
     %out_ptr = amdgcn.load_arg 0 : !sx2
     amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
-    %swizzled_row, %swizzled_col = func.call @swizzled_mfma_index_B_16x16xf16() : () -> (index, index)
+    %idx = func.call @swizzled_mfma_index_B_16x16xf16() : () -> !index_pair
+    %swizzled_row, %swizzled_col = aster_utils.struct_extract %idx ["i", "j"] : !index_pair -> index, index
     %swizzled_col_i32 = arith.index_cast %swizzled_col : index to i32
     func.call @store_at_tid(%swizzled_col_i32, %out_ptr, %c0) : (i32, !sx2, index) -> ()
     amdgcn.end_kernel
@@ -337,7 +353,8 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %c0 = arith.constant 0 : index
     %out_ptr = amdgcn.load_arg 0 : !sx2
     amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> lgkmcnt = 0
-    %swizzled_row, %swizzled_col = func.call @swizzled_mfma_index_C_16x16xf32() : () -> (index, index)
+    %idx = func.call @swizzled_mfma_index_C_16x16xf32() : () -> !index_pair
+    %swizzled_row, %swizzled_col = aster_utils.struct_extract %idx ["i", "j"] : !index_pair -> index, index
     %swizzled_col_i32 = arith.index_cast %swizzled_col : index to i32
     func.call @store_at_tid(%swizzled_col_i32, %out_ptr, %c0) : (i32, !sx2, index) -> ()
     amdgcn.end_kernel

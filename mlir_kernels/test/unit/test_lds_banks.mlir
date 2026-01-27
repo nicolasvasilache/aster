@@ -5,15 +5,19 @@
 !vx2 = !amdgcn.vgpr_range<[? + 2]>
 !vx4 = !amdgcn.vgpr_range<[? + 4]>
 
+!index_pair = !aster_utils.struct<i: index, j: index>
+!index_descriptor_2level_2d = !aster_utils.struct<i: index, j: index, ii: index, jj: index, stride: index, elt_size_b: index>
+!index_tuple_8 = !aster_utils.struct<b0: index, b1: index, b2: index, b3: index, b4: index, b5: index, b6: index, b7: index>
+
 amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<cdna3> {
   //===--------------------------------------------------------------------===//
   // Library function declarations (provided by amdgcn-preload-library pass)
   //===--------------------------------------------------------------------===//
   // indexing.mlir
-  func.func private @tiled_matrix_offset(index, index, index, index, index, index) -> !v
-  func.func private @mfma_index_A_16x16xf16() -> (index, index)
-  func.func private @xor_swizzled_mfma_index_16xf16(index, index) -> (index, index)
-  func.func private @lds_banks_for_transfer(index, index) -> (index, index, index, index, index, index, index, index)
+  func.func private @tiled_matrix_offset(!index_descriptor_2level_2d) -> !v
+  func.func private @mfma_index_A_16x16xf16() -> !index_pair
+  func.func private @xor_swizzled_mfma_index_16xf16(!index_pair) -> !index_pair
+  func.func private @lds_banks_for_transfer(index, index) -> !index_tuple_8
   // copies.mlir
   func.func private @store_to_global_dwordx4_wait(!vx4, !sx2, index, index, index)
 
@@ -37,20 +41,20 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %LDS_STRIDE_IN_BYTES = affine.apply affine_map<()[elt_size] -> (elt_size * 16)>()[%elt_size]
 
     // Get MFMA A indexing pattern WITHOUT swizzle
-    %row, %col = func.call @mfma_index_A_16x16xf16() : () -> (index, index)
+    %idx = func.call @mfma_index_A_16x16xf16() : () -> !index_pair
+    %row, %col = aster_utils.struct_extract %idx ["i", "j"] : !index_pair -> index, index
 
     // Compute byte address in LDS directly (no swizzle)
-    %off_vgpr = func.call @tiled_matrix_offset(
-        %c0, %c0, %row, %col, %LDS_STRIDE_IN_BYTES, %elt_size)
-      : (index, index, index, index, index, index) -> !v
+    %desc = aster_utils.struct_create(%c0, %c0, %row, %col, %LDS_STRIDE_IN_BYTES, %elt_size) : (index, index, index, index, index, index) -> !index_descriptor_2level_2d
+    %off_vgpr = func.call @tiled_matrix_offset(%desc) : (!index_descriptor_2level_2d) -> !v
 
     %off_i32 = lsir.from_reg %off_vgpr : !v -> i32
     %byte_address = arith.index_cast %off_i32 : i32 to index
 
     // Compute banks for an 8-byte access
     %transfer_size = arith.constant 8 : index  // dwordx2
-    %b0, %b1, %b2, %b3, %b4_, %b5_, %b6_, %b7_ = func.call @lds_banks_for_transfer(%byte_address, %transfer_size)
-      : (index, index) -> (index, index, index, index, index, index, index, index)
+    %banks_result = func.call @lds_banks_for_transfer(%byte_address, %transfer_size) : (index, index) -> !index_tuple_8
+    %b0, %b1, %b2, %b3, %b4_, %b5_, %b6_, %b7_ = aster_utils.struct_extract %banks_result ["b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7"] : !index_tuple_8 -> index, index, index, index, index, index, index, index
 
 
     // Store 4 banks as dwordx4 at tid position
@@ -91,24 +95,23 @@ amdgcn.module @test_indexing target = #amdgcn.target<gfx942> isa = #amdgcn.isa<c
     %LDS_STRIDE_IN_BYTES = affine.apply affine_map<()[elt_size] -> (elt_size * 16)>()[%elt_size]
 
     // Get MFMA A indexing pattern: returns (row, col) for this lane
-    %row, %col = func.call @mfma_index_A_16x16xf16() : () -> (index, index)
+    %idx = func.call @mfma_index_A_16x16xf16() : () -> !index_pair
 
     // Apply XOR swizzle to avoid bank conflicts
-    %swizzled_row, %swizzled_col = func.call @xor_swizzled_mfma_index_16xf16(%row, %col)
-      : (index, index) -> (index, index)
+    %swizzled_idx = func.call @xor_swizzled_mfma_index_16xf16(%idx) : (!index_pair) -> !index_pair
+    %swizzled_row, %swizzled_col = aster_utils.struct_extract %swizzled_idx ["i", "j"] : !index_pair -> index, index
 
     // Compute byte address in LDS: address = m_pos=0, n_pos=0 + swizzled position
-    %off_vgpr = func.call @tiled_matrix_offset(
-        %c0, %c0, %swizzled_row, %swizzled_col, %LDS_STRIDE_IN_BYTES, %elt_size)
-      : (index, index, index, index, index, index) -> !v
+    %desc = aster_utils.struct_create(%c0, %c0, %swizzled_row, %swizzled_col, %LDS_STRIDE_IN_BYTES, %elt_size) : (index, index, index, index, index, index) -> !index_descriptor_2level_2d
+    %off_vgpr = func.call @tiled_matrix_offset(%desc) : (!index_descriptor_2level_2d) -> !v
 
     %off_i32 = lsir.from_reg %off_vgpr : !v -> i32
     %byte_address = arith.index_cast %off_i32 : i32 to index
 
     // Compute banks for an 8-byte (dwordx2) access starting at byte_address
     %transfer_size = arith.constant 8 : index  // dwordx2
-    %b0, %b1, %b2, %b3, %b4_, %b5_, %b6_, %b7_ = func.call @lds_banks_for_transfer(%byte_address, %transfer_size)
-      : (index, index) -> (index, index, index, index, index, index, index, index)
+    %banks_result = func.call @lds_banks_for_transfer(%byte_address, %transfer_size) : (index, index) -> !index_tuple_8
+    %b0, %b1, %b2, %b3, %b4_, %b5_, %b6_, %b7_ = aster_utils.struct_extract %banks_result ["b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7"] : !index_tuple_8 -> index, index, index, index, index, index, index, index
 
 
     // Store 4 banks as dwordx4 at tid position

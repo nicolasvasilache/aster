@@ -16,6 +16,34 @@
 !ax2 = !amdgcn.agpr_range<[? + 2]>
 !ax4 = !amdgcn.agpr_range<[? + 4]>
 
+// A 2D index pair containing row (i) and column (j) indices.
+!index_pair = !aster_utils.struct<i: index, j: index>
+
+// A 2D index descriptor containing:
+//   - i, j: row and column indices
+//   - stride: stride in elements (not bytes)
+//   - elt_size_b: element size in bytes
+!index_descriptor_2d = !aster_utils.struct<i: index, j: index, stride: index, elt_size_b: index>
+
+// A 2-level 2D index descriptor containing:
+//   - i, j: row and column indices of the outer tile
+//   - ii, jj: row and column indices of the inner tile
+//   - stride: stride in elements (not bytes)
+//   - elt_size_b: element size in bytes
+!index_descriptor_2level_2d = !aster_utils.struct<i: index, j: index, ii: index, jj: index, stride: index, elt_size_b: index>
+
+// A 3-level 2D index descriptor containing:
+//   - i, j: The outer-most major tile position (e.g. the start row of a tile)
+//   - ii, jj: The outer-most minor tile position (e.g. the start row of the sub-tile)
+//   - iii, jjj: The outer-most position (e.g. a row relative to the sub-tile)
+//   - stride: The stride (e.g. inner 2-D tile size **in bytes**)
+//   - elt_size_b: The element size **in bytes**
+!index_descriptor_3level_2d = !aster_utils.struct<i: index, j: index, ii: index, jj: index, iii: index, jjj: index, stride: index, elt_size_b: index>
+
+// An 8-tuple of index values (used for LDS bank indices)
+// Note: MLIR doesn't support tuple type aliases directly, so we use a struct
+!index_tuple_8 = !aster_utils.struct<b0: index, b1: index, b2: index, b3: index, b4: index, b5: index, b6: index, b7: index>
+
 amdgcn.library @common_indexing {
   //===--------------------------------------------------------------------===//
   // GPU id functions.
@@ -47,30 +75,35 @@ amdgcn.library @common_indexing {
   // Reusable work distribution functions.
   //===--------------------------------------------------------------------===//
   // 2-D delinearization of lane id to 2D position.
-  func.func private @lane_delinearize_2d(%M: index, %N: index) -> (index, index) {
+  func.func private @lane_delinearize_2d(%dims: !index_pair) -> !index_pair {
+    %M, %N = aster_utils.struct_extract %dims ["i", "j"] : !index_pair -> index, index
     %lane_id = func.call @lane_id() : () -> index
     %i, %j = affine.delinearize_index %lane_id into (%M, %N) : index, index
-    return %i, %j : index, index
+    %result = aster_utils.struct_create(%i, %j) : (index, index) -> !index_pair
+    return %result : !index_pair
   }
 
   // Compute 2D partitioning of blocks within the grid.
-  func.func private @block_id_x_delinearize_2d(%M: index, %N: index) -> (index, index) {
+  func.func private @block_id_x_delinearize_2d(%dims: !index_pair) -> !index_pair {
+    %M, %N = aster_utils.struct_extract %dims ["i", "j"] : !index_pair -> index, index
     %bid = gpu.block_id x
     %i, %j = affine.delinearize_index %bid into (%M, %N) : index, index
-    return %i, %j : index, index
+    %result = aster_utils.struct_create(%i, %j) : (index, index) -> !index_pair
+    return %result : !index_pair
   }
 
   // Compute 2D partitioning of blocks within the grid for tiled problems.
   func.func private @tiled_grid_partition_2d(
-    %M_SIZE: index,      // Outer problem size
-    %N_SIZE: index,      // Inner problem size
-    %M_TILE_SIZE: index, // Outer tile size
-    %N_TILE_SIZE: index  // Inner tile size
-  ) -> (index, index) {
+    %sizes: !index_pair,      // Problem sizes (M_SIZE, N_SIZE)
+    %tile_sizes: !index_pair  // Tile sizes (M_TILE_SIZE, N_TILE_SIZE)
+  ) -> !index_pair {
+    %M_SIZE, %N_SIZE = aster_utils.struct_extract %sizes ["i", "j"] : !index_pair -> index, index
+    %M_TILE_SIZE, %N_TILE_SIZE = aster_utils.struct_extract %tile_sizes ["i", "j"] : !index_pair -> index, index
     %M = affine.apply affine_map<()[sz, bsz] -> (sz ceildiv bsz)>()[%M_SIZE, %M_TILE_SIZE]
     %N = affine.apply affine_map<()[sz, bsz] -> (sz ceildiv bsz)>()[%N_SIZE, %N_TILE_SIZE]
-    %i, %j = func.call @block_id_x_delinearize_2d(%M, %N) : (index, index) -> (index, index)
-    return %i, %j : index, index
+    %dims = aster_utils.struct_create(%M, %N) : (index, index) -> !index_pair
+    %result = func.call @block_id_x_delinearize_2d(%dims) : (!index_pair) -> !index_pair
+    return %result : !index_pair
   }
 
   //===--------------------------------------------------------------------===//
@@ -78,12 +111,8 @@ amdgcn.library @common_indexing {
   //===--------------------------------------------------------------------===//
   // Compute the linear byte offset for accessing a 2-D matrix given the outer
   // and inner positions.
-  func.func private @matrix_offset(
-    %i: index,       // The outer-most position (e.g. a row)
-    %j: index,       // The inner-most position (e.g. a column)
-    %stride: index,  // The stride (e.g. inner 2-D size **in bytes**)
-    %elt_size: index // The element size **in bytes**
-  ) -> !v {
+  func.func private @matrix_offset(%desc: !index_descriptor_2d) -> !v {
+    %i, %j, %stride, %elt_size = aster_utils.struct_extract %desc ["i", "j", "stride", "elt_size_b"] : !index_descriptor_2d -> index, index, index, index
     %off = affine.apply
       affine_map<()[i, j, stride, elt_size] -> (i * stride  + j * elt_size)>
       ()[%i, %j, %stride, %elt_size]
@@ -95,17 +124,13 @@ amdgcn.library @common_indexing {
   // Compute the linear byte offset for accessing a tiled 2-D matrix given the
   // positions to the start of the tile and the position within the tile.
   func.func private @tiled_matrix_offset(
-    %i: index,       // The outer-most tile position (e.g. the start row of a tile)
-    %j: index,       // The inner-most tile position (e.g. the start column of a tile)
-    %ii: index,      // The outer-most position (e.g. a row relative to the tile)
-    %jj: index,      // The inner-most position (e.g. a column relative to the tile)
-    %stride: index,  // The stride (e.g. inner 2-D tile size **in bytes**)
-    %elt_size: index // The element size **in bytes**
+    %desc: !index_descriptor_2level_2d
   ) -> !v {
+    %i, %j, %ii, %jj, %stride, %elt_size = aster_utils.struct_extract %desc ["i", "j", "ii", "jj", "stride", "elt_size_b"] : !index_descriptor_2level_2d -> index, index, index, index, index, index
     %i_pos = affine.apply affine_map<()[i, ii] -> (i + ii)>()[%i, %ii]
     %j_pos = affine.apply affine_map<()[j, jj] -> (j + jj)>()[%j, %jj]
-    %off_reg = func.call @matrix_offset(%i_pos, %j_pos, %stride, %elt_size)
-      : (index, index, index, index) -> !v
+    %desc_2d = aster_utils.struct_create(%i_pos, %j_pos, %stride, %elt_size) : (index, index, index, index) -> !index_descriptor_2d
+    %off_reg = func.call @matrix_offset(%desc_2d) : (!index_descriptor_2d) -> !v
     return %off_reg : !v
   }
 
@@ -113,19 +138,13 @@ amdgcn.library @common_indexing {
   // positions to the start of the major tile, positions to the start of the
   // minor tile, and the position within the tile.
   func.func private @tiledx2_matrix_offset(
-    %i: index,       // The outer-most major tile position (e.g. the start row of a tile)
-    %j: index,       // The inner-most major tile position (e.g. the start column of a tile)
-    %ii: index,      // The outer-most minor tile position (e.g. the start row of a the sub-tile)
-    %jj: index,      // The inner-most minor tile position (e.g. the start column of the sub-tile)
-    %iii: index,     // The outer-most position (e.g. a row relative to the sub-tile)
-    %jjj: index,     // The inner-most position (e.g. a column relative to the sub-tile)
-    %stride: index,  // The stride (e.g. inner 2-D tile size **in bytes**)
-    %elt_size: index // The element size **in bytes**
+    %desc: !index_descriptor_3level_2d
   ) -> !v {
+    %i, %j, %ii, %jj, %iii, %jjj, %stride, %elt_size = aster_utils.struct_extract %desc ["i", "j", "ii", "jj", "iii", "jjj", "stride", "elt_size_b"] : !index_descriptor_3level_2d -> index, index, index, index, index, index, index, index
     %i_pos = affine.apply affine_map<()[i, ii, iii] -> (i + ii + iii)>()[%i, %ii, %iii]
     %j_pos = affine.apply affine_map<()[j, jj, jjj] -> (j + jj + jjj)>()[%j, %jj, %jjj]
-    %off_reg = func.call @matrix_offset(%i_pos, %j_pos, %stride, %elt_size)
-      : (index, index, index, index) -> !v
+    %desc_2d = aster_utils.struct_create(%i_pos, %j_pos, %stride, %elt_size) : (index, index, index, index) -> !index_descriptor_2d
+    %off_reg = func.call @matrix_offset(%desc_2d) : (!index_descriptor_2d) -> !v
     return %off_reg : !v
   }
 
@@ -133,27 +152,30 @@ amdgcn.library @common_indexing {
   // Reusable MFMA memory access indexing functions.
   //===--------------------------------------------------------------------===//
   // MFMA indexing function for accessing the `A` 16x16xf16 fragment
-  func.func private @mfma_index_A_16x16xf16() -> (index, index) {
+  func.func private @mfma_index_A_16x16xf16() -> !index_pair {
     %lane_id = func.call @lane_id() : () -> index
     %row = affine.apply affine_map<()[lid] -> (lid mod 16)>()[%lane_id]
     %col = affine.apply affine_map<()[lid] -> (((lid floordiv 16) * 4))>()[%lane_id]
-    return %row, %col : index, index
+    %result = aster_utils.struct_create(%row, %col) : (index, index) -> !index_pair
+    return %result : !index_pair
   }
 
   // MFMA indexing function for accessing the `B` 16x16xf16 fragment
-  func.func private @mfma_index_B_16x16xf16() -> (index, index) {
+  func.func private @mfma_index_B_16x16xf16() -> !index_pair {
     %lane_id = func.call @lane_id() : () -> index
     %row = affine.apply affine_map<()[lid] -> (lid mod 16)>()[%lane_id]
     %col = affine.apply affine_map<()[lid] -> (((lid floordiv 16) * 4))>()[%lane_id]
-    return %col, %row : index, index
+    %result = aster_utils.struct_create(%col, %row) : (index, index) -> !index_pair
+    return %result : !index_pair
   }
 
   // MFMA indexing function for accessing the `C` 16x16xf32 fragment
-  func.func private @mfma_index_C_16x16xf32() -> (index, index) {
+  func.func private @mfma_index_C_16x16xf32() -> !index_pair {
     %lane_id = func.call @lane_id() : () -> index
     %row = affine.apply affine_map<()[lid] -> (lid mod 16)>()[%lane_id]
     %col = affine.apply affine_map<()[lid] -> (((lid floordiv 16) * 4))>()[%lane_id]
-    return %row, %col : index, index
+    %result = aster_utils.struct_create(%row, %col) : (index, index) -> !index_pair
+    return %result : !index_pair
   }
 
   //===--------------------------------------------------------------------===//
@@ -164,7 +186,8 @@ amdgcn.library @common_indexing {
   // Output: (row, swizzled_col) for LDS access
   // Formula: swizzled_col = col XOR (row / 4)
   // We XOR the high 2 bits of col (col / 4) with row_group (row / 4)
-  func.func private @xor_swizzled_mfma_index_16xf16(%row: index, %col: index) -> (index, index) {
+  func.func private @xor_swizzled_mfma_index_16xf16(%idx: !index_pair) -> !index_pair {
+    %row, %col = aster_utils.struct_extract %idx ["i", "j"] : !index_pair -> index, index
     // row_group = row / 4 (values 0, 1, 2, 3 for rows 0, 4, 8, 12)
     %row_group = affine.apply affine_map<()[row] -> (row floordiv 4)>()[%row]
 
@@ -182,36 +205,34 @@ amdgcn.library @common_indexing {
     %swizzled_col = affine.apply affine_map<()[xored, col_low]
       -> (xored * 4 + col_low)>()[%xored, %col_low]
 
-    return %row, %swizzled_col : index, index
+    %result = aster_utils.struct_create(%row, %swizzled_col) : (index, index) -> !index_pair
+    return %result : !index_pair
   }
 
   // Swizzle for `A` 16x16xf16 fragment with bank conflict avoidance
   // A matrix is accessed with transposed pattern (col-major in LDS)
   // Returns (row, swizzled_col) for LDS access
-  func.func private @swizzled_mfma_index_A_16x16xf16() -> (index, index) {
-    %row, %col = func.call @mfma_index_A_16x16xf16() : () -> (index, index)
-    %swizzled_row, %swizzled_col = func.call @xor_swizzled_mfma_index_16xf16(%row, %col)
-      : (index, index) -> (index, index)
-    return %swizzled_row, %swizzled_col : index, index
+  func.func private @swizzled_mfma_index_A_16x16xf16() -> !index_pair {
+    %idx = func.call @mfma_index_A_16x16xf16() : () -> !index_pair
+    %result = func.call @xor_swizzled_mfma_index_16xf16(%idx) : (!index_pair) -> !index_pair
+    return %result : !index_pair
   }
 
   // Swizzle for `B` 16x16xf16 fragment with bank conflict avoidance
   // Returns (row, swizzled_col) for LDS access
-  func.func private @swizzled_mfma_index_B_16x16xf16() -> (index, index) {
-    %row, %col = func.call @mfma_index_B_16x16xf16() : () -> (index, index)
-    %swizzled_row, %swizzled_col = func.call @xor_swizzled_mfma_index_16xf16(%row, %col)
-      : (index, index) -> (index, index)
-    return %swizzled_row, %swizzled_col : index, index
+  func.func private @swizzled_mfma_index_B_16x16xf16() -> !index_pair {
+    %idx = func.call @mfma_index_B_16x16xf16() : () -> !index_pair
+    %result = func.call @xor_swizzled_mfma_index_16xf16(%idx) : (!index_pair) -> !index_pair
+    return %result : !index_pair
   }
 
   // Swizzle for `C` 16x16xf32 fragment with bank conflict avoidance
   // For f32: each element is 4 bytes = 1 bank width
   // Returns (row, swizzled_col) for LDS access
-  func.func private @swizzled_mfma_index_C_16x16xf32() -> (index, index) {
-    %row, %col = func.call @mfma_index_C_16x16xf32() : () -> (index, index)
-    %swizzled_row, %swizzled_col = func.call @xor_swizzled_mfma_index_16xf16(%row, %col)
-      : (index, index) -> (index, index)
-    return %swizzled_row, %swizzled_col : index, index
+  func.func private @swizzled_mfma_index_C_16x16xf32() -> !index_pair {
+    %idx = func.call @mfma_index_C_16x16xf32() : () -> !index_pair
+    %result = func.call @xor_swizzled_mfma_index_16xf16(%idx) : (!index_pair) -> !index_pair
+    return %result : !index_pair
   }
 
   //===--------------------------------------------------------------------===//
@@ -237,49 +258,47 @@ amdgcn.library @common_indexing {
   func.func private @lds_banks_for_transfer(
     %addr: index,
     %transfer_size: index
-  ) -> (index, index, index, index, index, index, index, index) {
+  ) -> !index_tuple_8 {
     %neg1 = arith.constant -1 : index
 
     // Compute all 8 possible banks (this is a thread-local quantity)
     %aaddr = aster_utils.assume_range %addr min 0 : index
-    %b0 = affine.apply affine_map<()[addr] -> (((addr + 0) floordiv 2) mod 32)>()[%aaddr]
-    %b1 = affine.apply affine_map<()[addr] -> (((addr + 2) floordiv 2) mod 32)>()[%aaddr]
-    %b2 = affine.apply affine_map<()[addr] -> (((addr + 4) floordiv 2) mod 32)>()[%aaddr]
-    %b3 = affine.apply affine_map<()[addr] -> (((addr + 6) floordiv 2) mod 32)>()[%aaddr]
-    %b4 = affine.apply affine_map<()[addr] -> (((addr + 8) floordiv 2) mod 32)>()[%aaddr]
-    %b5 = affine.apply affine_map<()[addr] -> (((addr + 10) floordiv 2) mod 32)>()[%aaddr]
-    %b6 = affine.apply affine_map<()[addr] -> (((addr + 12) floordiv 2) mod 32)>()[%aaddr]
-    %b7 = affine.apply affine_map<()[addr] -> (((addr + 14) floordiv 2) mod 32)>()[%aaddr]
+    %b0_val = affine.apply affine_map<()[addr] -> (((addr + 0) floordiv 2) mod 32)>()[%aaddr]
+    %b1_val = affine.apply affine_map<()[addr] -> (((addr + 2) floordiv 2) mod 32)>()[%aaddr]
+    %b2_val = affine.apply affine_map<()[addr] -> (((addr + 4) floordiv 2) mod 32)>()[%aaddr]
+    %b3_val = affine.apply affine_map<()[addr] -> (((addr + 6) floordiv 2) mod 32)>()[%aaddr]
+    %b4_val = affine.apply affine_map<()[addr] -> (((addr + 8) floordiv 2) mod 32)>()[%aaddr]
+    %b5_val = affine.apply affine_map<()[addr] -> (((addr + 10) floordiv 2) mod 32)>()[%aaddr]
+    %b6_val = affine.apply affine_map<()[addr] -> (((addr + 12) floordiv 2) mod 32)>()[%aaddr]
+    %b7_val = affine.apply affine_map<()[addr] -> (((addr + 14) floordiv 2) mod 32)>()[%aaddr]
 
-    %r0, %r1, %r2, %r3, %r4, %r5, %r6, %r7 = scf.index_switch %transfer_size
-      -> index, index, index, index, index, index, index, index
+    %result = scf.index_switch %transfer_size -> !index_tuple_8
     case 4 {
       // b32: 2 banks valid
-      scf.yield %b0, %b1, %neg1, %neg1, %neg1, %neg1, %neg1, %neg1
-        : index, index, index, index, index, index, index, index
+      %result_case4 = aster_utils.struct_create(%b0_val, %b1_val, %neg1, %neg1, %neg1, %neg1, %neg1, %neg1) : (index, index, index, index, index, index, index, index) -> !index_tuple_8
+      scf.yield %result_case4 : !index_tuple_8
     }
     case 8 {
       // b64: 4 banks valid
-      scf.yield %b0, %b1, %b2, %b3, %neg1, %neg1, %neg1, %neg1
-        : index, index, index, index, index, index, index, index
+      %result_case8 = aster_utils.struct_create(%b0_val, %b1_val, %b2_val, %b3_val, %neg1, %neg1, %neg1, %neg1) : (index, index, index, index, index, index, index, index) -> !index_tuple_8
+      scf.yield %result_case8 : !index_tuple_8
     }
     case 12 {
       // b96: 6 banks valid
-      scf.yield %b0, %b1, %b2, %b3, %b4, %b5, %neg1, %neg1
-        : index, index, index, index, index, index, index, index
+      %result_case12 = aster_utils.struct_create(%b0_val, %b1_val, %b2_val, %b3_val, %b4_val, %b5_val, %neg1, %neg1) : (index, index, index, index, index, index, index, index) -> !index_tuple_8
+      scf.yield %result_case12 : !index_tuple_8
     }
     case 16 {
       // b128: 8 banks valid
-      scf.yield %b0, %b1, %b2, %b3, %b4, %b5, %b6, %b7
-        : index, index, index, index, index, index, index, index
+      %result_case16 = aster_utils.struct_create(%b0_val, %b1_val, %b2_val, %b3_val, %b4_val, %b5_val, %b6_val, %b7_val) : (index, index, index, index, index, index, index, index) -> !index_tuple_8
+      scf.yield %result_case16 : !index_tuple_8
     }
     default {
-      scf.yield %neg1, %neg1, %neg1, %neg1, %neg1, %neg1, %neg1, %neg1
-        : index, index, index, index, index, index, index, index
+      %result_default = aster_utils.struct_create(%neg1, %neg1, %neg1, %neg1, %neg1, %neg1, %neg1, %neg1) : (index, index, index, index, index, index, index, index) -> !index_tuple_8
+      scf.yield %result_default : !index_tuple_8
     }
 
-    return %r0, %r1, %r2, %r3, %r4, %r5, %r6, %r7
-      : index, index, index, index, index, index, index, index
+    return %result : !index_tuple_8
   }
 
   //===--------------------------------------------------------------------===//
