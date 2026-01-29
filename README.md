@@ -1,6 +1,6 @@
 # ASTER 💫 : Assembly Tooling and Representations
 
-MLIR-based tool for programmable and highly-controllable assembly production on
+MLIR C++ tool for programmable and highly-controllable assembly production on
 AMD GPUs.
 
 ## Motivation
@@ -18,6 +18,12 @@ AMD's open approach to hardware ISA documentation creates a unique opportunity t
 build world-class assembly tooling in the open, making AMDGPU ASM accessible to a
 broader community as well as higher-level tools, while maintaining expert-level
 control.
+
+To reap the benefits of modern and future HW we believe an order of magnitude 
+better low-level tooling is needed.
+
+Aster builds the foundations for highly-controllable assembly production 
+and pushes the boundaries of what’s possible in low‑level performance tooling.
 
 ## Design Philosophy and More
 
