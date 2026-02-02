@@ -2,7 +2,7 @@
 
 import os
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional, Dict
 
 import numpy as np
 import pytest
@@ -48,14 +48,31 @@ def get_mlir_file(file_name: str) -> str:
     return os.path.join(os.path.dirname(__file__), file_name)
 
 
-def compile_and_run(mlir_file, kernel_name, pass_pipeline, input_args, output_args):
+def run_kittens_kernel(
+    mlir_file,
+    kernel_name,
+    input_args=None,
+    output_args=None,
+    pass_pipeline=None,
+    template_substitutions=None,
+):
     """Compile an MLIR file to HSACO and execute the kernel on GPU."""
+    preprocess = None
+    if template_substitutions:
+        subs = template_substitutions
+
+        def preprocess(content):
+            for pattern, replacement in subs.items():
+                content = content.replace(pattern, replacement)
+            return content
+
     _compile_and_run(
         file_name=mlir_file,
         kernel_name=kernel_name,
         input_data=input_args,
         output_data=output_args,
         pass_pipeline=pass_pipeline,
+        preprocess=preprocess,
         library_paths=get_kittens_library_paths(),
         mcpu=MCPU,
         wavefront_size=WAVEFRONT_SIZE,
@@ -72,13 +89,14 @@ class TestKittensZeroC:
     def test_zero_C_produces_zeros(self):
         """Zero-initialized C tile should contain all zeros."""
         output = np.zeros(16 * 16, dtype=np.int32)
-        compile_and_run(
-            get_mlir_file("test_zero_C.mlir"),
-            "test_zero_C",
-            TEST_SCF_PIPELINING_PASS_PIPELINE,
+
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_zero_C.mlir"),
+            kernel_name="test_zero_C",
             input_args=[],
             output_args=[output],
         )
+
         expected = np.zeros(16 * 16, dtype=np.int32)
         np.testing.assert_array_equal(output, expected)
 
@@ -92,13 +110,13 @@ class TestKittensLoadStoreA:
         input_data = input_f16.view(np.uint16)
         output_data = np.full(16 * 16, 0xFFFF, dtype=np.uint16)
 
-        compile_and_run(
-            get_mlir_file("test_load_store_A.mlir"),
-            "test_load_store_A",
-            TEST_SCF_PIPELINING_PASS_PIPELINE,
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_load_store_A.mlir"),
+            kernel_name="test_load_store_A",
             input_args=[input_data],
             output_args=[output_data],
         )
+
         np.testing.assert_array_equal(output_data, input_data)
 
 
@@ -111,13 +129,13 @@ class TestKittensMFMA:
         B = np.arange(16 * 16, dtype=np.float16).reshape(16, 16) / 256.0
         D_output = np.zeros(16 * 16, dtype=np.float32)
 
-        compile_and_run(
-            get_mlir_file("test_mfma.mlir"),
-            "test_mfma",
-            TEST_SCF_PIPELINING_PASS_PIPELINE,
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_mfma.mlir"),
+            kernel_name="test_mfma",
             input_args=[A.flatten(), B.flatten()],
             output_args=[D_output],
         )
+
         expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
         np.testing.assert_allclose(D_output, expected, rtol=1e-3, atol=1e-3)
 
@@ -138,13 +156,13 @@ class TestKittensGEMM:
         A, B = _make_gemm_inputs(128)
         C_output = np.zeros(16 * 16, dtype=np.float32)
 
-        compile_and_run(
-            get_mlir_file("test_gemm_16x16x128.mlir"),
-            "gemm_16x16x128",
-            TEST_SCF_PIPELINING_PASS_PIPELINE,
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_gemm_16x16x128.mlir"),
+            kernel_name="gemm_16x16x128",
             input_args=[A.flatten(), B.flatten()],
             output_args=[C_output],
         )
+
         expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
         np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
 
@@ -157,13 +175,45 @@ class TestKittensGEMMSched:
         A, B = _make_gemm_inputs(128)
         C_output = np.zeros(16 * 16, dtype=np.float32)
 
-        compile_and_run(
-            get_mlir_file("test_gemm_16x16x128_with_sched.mlir"),
-            "gemm_16x16x128_sched",
-            FUTURE_SROA_PASS_PIPELINE,
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_gemm_16x16x128_with_sched.mlir"),
+            kernel_name="gemm_16x16x128_sched",
             input_args=[A.flatten(), B.flatten()],
             output_args=[C_output],
+            pass_pipeline=FUTURE_SROA_PASS_PIPELINE,
         )
+
+        expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
+        np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
+
+
+class TestKittensGEMMLoop:
+    """Test GEMM with scf.for K-loop for arbitrary K values."""
+
+    @pytest.mark.parametrize("k", [32, 64, 128, 4096])
+    def test_gemm_16x16xK(self, k):
+        """GEMM should compute C = A @ B^T for various K values."""
+        k_tiles = k // 16
+        stride_ab = k * 2
+
+        np.random.seed(42 + k)
+        A = (np.random.randn(16, k) * 0.1).astype(np.float16)
+        B = (np.random.randn(16, k) * 0.1).astype(np.float16)
+        C_output = np.zeros(16 * 16, dtype=np.float32)
+
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_gemm_16x16xK.mlir"),
+            kernel_name="gemm_16x16xK",
+            input_args=[A.flatten(), B.flatten()],
+            output_args=[C_output],
+            pass_pipeline=TEST_SCF_PIPELINING_PASS_PIPELINE,
+            template_substitutions={
+                "{{K}}": str(k),
+                "{{K_TILES}}": str(k_tiles),
+                "{{STRIDE_AB}}": str(stride_ab),
+            },
+        )
+
         expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
         np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
 
@@ -202,3 +252,7 @@ if __name__ == "__main__":
     run_test(TestKittensMFMA().test_mfma_matmul)
     run_test(TestKittensGEMM().test_gemm_16x16x128)
     run_test(TestKittensGEMMSched().test_gemm_16x16x128_sched)
+    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=32)
+    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=64)
+    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=128)
+    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=4096)
