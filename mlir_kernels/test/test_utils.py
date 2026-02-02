@@ -141,7 +141,7 @@ def compile_and_run_kernel(
     output_args: List[np.ndarray],
     grid_dim: Tuple[int, int, int],
     block_dim: Tuple[int, int, int],
-    verify_fn: Callable,
+    verify_fn: Optional[Callable] = None,
     mcpu: str = "gfx942",
     wavefront_size: int = 64,
     preprocess: Optional[Callable[[str], str]] = None,
