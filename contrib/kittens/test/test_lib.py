@@ -73,7 +73,6 @@ def run_kittens_kernel(
             library_paths=get_kittens_library_paths(),
             num_iterations=1,
             skip_on_cross_compile=True,
-            print_ir_after_all=True,
         )
 
 
