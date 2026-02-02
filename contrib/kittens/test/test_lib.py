@@ -3,16 +3,14 @@
 import os
 import pytest
 import numpy as np
-from typing import List
+from typing import List, Optional, Dict
 
-from aster import ir, utils
-from integration_test.test_utils import (
-    execute_kernel_and_verify,
-    compile_mlir_file_to_asm,
-    hsaco_file,
+from aster import ir
+from aster.pass_pipelines import (
+    TEST_SCF_PIPELINING_PASS_PIPELINE,
 )
-from aster.pass_pipelines import TEST_SYNCHRONOUS_SROA_PASS_PIPELINE
 from mlir_kernels.common import get_library_paths
+from mlir_kernels.test.test_utils import compile_and_run_kernel
 
 # Test configuration
 MCPU = "gfx942"
@@ -34,50 +32,65 @@ def get_mlir_file(file_name: str) -> str:
     return os.path.join(os.path.dirname(__file__), file_name)
 
 
+def run_kittens_kernel(
+    mlir_file: str,
+    kernel_name: str,
+    input_args: List[np.ndarray],
+    output_args: List[np.ndarray],
+    pass_pipeline: str = TEST_SCF_PIPELINING_PASS_PIPELINE,
+    template_substitutions: Optional[Dict[str, str]] = None,
+) -> None:
+    """Thin wrapper around compile_and_run_kernel for kittens tests."""
+    # Print test information
+    test_info = f"Running: {kernel_name}"
+    if template_substitutions:
+        params = ", ".join(f"{k}={v}" for k, v in template_substitutions.items())
+        test_info += f" ({params})"
+    print(f"\n{test_info}")
+
+    preprocess = None
+    if template_substitutions:
+
+        def preprocess(mlir_content: str) -> str:
+            for placeholder, value in template_substitutions.items():
+                mlir_content = mlir_content.replace(placeholder, value)
+            return mlir_content
+
+    with ir.Context() as ctx:
+        compile_and_run_kernel(
+            mlir_file=mlir_file,
+            kernel_name=kernel_name,
+            pass_pipeline=pass_pipeline,
+            ctx=ctx,
+            input_args=input_args,
+            output_args=output_args,
+            grid_dim=(1, 1, 1),
+            block_dim=(64, 1, 1),
+            verify_fn=None,
+            mcpu=MCPU,
+            wavefront_size=WAVEFRONT_SIZE,
+            preprocess=preprocess,
+            library_paths=get_kittens_library_paths(),
+            num_iterations=1,
+            skip_on_cross_compile=True,
+            print_ir_after_all=True,
+        )
+
+
 class TestKittensZeroC:
     """Test @zero_C function from kittens/tiles_16x16.mlir."""
 
     def test_zero_C_produces_zeros(self):
         """Zero-initialized C tile should contain all zeros."""
-        mlir_file = get_mlir_file("test_zero_C.mlir")
-        kernel_name = "test_zero_C"
-        library_paths = get_kittens_library_paths()
-
-        # Output: 16x16 matrix of f32 (as int32 for bit-exact comparison)
         output = np.zeros(16 * 16, dtype=np.int32)
 
-        with ir.Context() as ctx:
-            asm_complete, module = compile_mlir_file_to_asm(
-                mlir_file,
-                kernel_name,
-                TEST_SYNCHRONOUS_SROA_PASS_PIPELINE,
-                ctx,
-                library_paths=library_paths,
-            )
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_zero_C.mlir"),
+            kernel_name="test_zero_C",
+            input_args=[],
+            output_args=[output],
+        )
 
-            hsaco_path = utils.assemble_to_hsaco(
-                asm_complete, target=MCPU, wavefront_size=WAVEFRONT_SIZE
-            )
-            if hsaco_path is None:
-                raise RuntimeError("Failed to assemble kernel to HSACO")
-
-            with hsaco_file(hsaco_path):
-                if not utils.system_has_mcpu(mcpu=MCPU):
-                    print(asm_complete)
-                    pytest.skip(f"GPU {MCPU} not available")
-
-                execute_kernel_and_verify(
-                    hsaco_path=hsaco_path,
-                    kernel_name=kernel_name,
-                    input_args=[],
-                    output_args=[output],
-                    mcpu=MCPU,
-                    wavefront_size=WAVEFRONT_SIZE,
-                    grid_dim=(1, 1, 1),
-                    block_dim=(64, 1, 1),
-                )
-
-        # All values should be zero
         expected = np.zeros(16 * 16, dtype=np.int32)
         np.testing.assert_array_equal(output, expected)
 
@@ -87,53 +100,17 @@ class TestKittensLoadStoreA:
 
     def test_load_store_roundtrip(self):
         """Load A tile and store it back - should preserve original data."""
-        mlir_file = get_mlir_file("test_load_store_A.mlir")
-        kernel_name = "test_load_store_A"
-        library_paths = get_kittens_library_paths()
-
-        # Input: 16x16 matrix of f16 with sequential values (as uint16)
-        # Use a recognizable pattern: values 0, 1, 2, ..., 255
-        input_data = np.arange(16 * 16, dtype=np.uint16)
-        # Convert to f16 bit pattern (just use the raw uint16 values as f16 bits)
-        # For testing, we use simple integer values that are valid f16
         input_f16 = np.arange(16 * 16, dtype=np.float16)
         input_data = input_f16.view(np.uint16)
-
-        # Output: same size, initialized to different value
         output_data = np.full(16 * 16, 0xFFFF, dtype=np.uint16)
 
-        with ir.Context() as ctx:
-            asm_complete, module = compile_mlir_file_to_asm(
-                mlir_file,
-                kernel_name,
-                TEST_SYNCHRONOUS_SROA_PASS_PIPELINE,
-                ctx,
-                library_paths=library_paths,
-            )
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_load_store_A.mlir"),
+            kernel_name="test_load_store_A",
+            input_args=[input_data],
+            output_args=[output_data],
+        )
 
-            hsaco_path = utils.assemble_to_hsaco(
-                asm_complete, target=MCPU, wavefront_size=WAVEFRONT_SIZE
-            )
-            if hsaco_path is None:
-                raise RuntimeError("Failed to assemble kernel to HSACO")
-
-            with hsaco_file(hsaco_path):
-                if not utils.system_has_mcpu(mcpu=MCPU):
-                    print(asm_complete)
-                    pytest.skip(f"GPU {MCPU} not available")
-
-                execute_kernel_and_verify(
-                    hsaco_path=hsaco_path,
-                    kernel_name=kernel_name,
-                    input_args=[input_data],
-                    output_args=[output_data],
-                    mcpu=MCPU,
-                    wavefront_size=WAVEFRONT_SIZE,
-                    grid_dim=(1, 1, 1),
-                    block_dim=(64, 1, 1),
-                )
-
-        # Output should match input exactly (bit-for-bit)
         np.testing.assert_array_equal(output_data, input_data)
 
 
@@ -142,54 +119,19 @@ class TestKittensMFMA:
 
     def test_mfma_matmul(self):
         """MFMA should compute D = A @ B^T correctly."""
-        mlir_file = get_mlir_file("test_mfma.mlir")
-        kernel_name = "test_mfma"
-        library_paths = get_kittens_library_paths()
-
-        # Create simple test matrices (16x16 f16)
-        # A = identity-like pattern, B = sequential values
-        A = np.eye(16, dtype=np.float16)  # Identity matrix
+        A = np.eye(16, dtype=np.float16)
         B = np.arange(16 * 16, dtype=np.float16).reshape(16, 16) / 256.0
-
-        # Flatten for kernel input
         A_flat = A.flatten()
         B_flat = B.flatten()
-
-        # Output: 16x16 f32
         D_output = np.zeros(16 * 16, dtype=np.float32)
 
-        with ir.Context() as ctx:
-            asm_complete, module = compile_mlir_file_to_asm(
-                mlir_file,
-                kernel_name,
-                TEST_SYNCHRONOUS_SROA_PASS_PIPELINE,
-                ctx,
-                library_paths=library_paths,
-            )
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_mfma.mlir"),
+            kernel_name="test_mfma",
+            input_args=[A_flat, B_flat],
+            output_args=[D_output],
+        )
 
-            hsaco_path = utils.assemble_to_hsaco(
-                asm_complete, target=MCPU, wavefront_size=WAVEFRONT_SIZE
-            )
-            if hsaco_path is None:
-                raise RuntimeError("Failed to assemble kernel to HSACO")
-
-            with hsaco_file(hsaco_path):
-                if not utils.system_has_mcpu(mcpu=MCPU):
-                    print(asm_complete)
-                    pytest.skip(f"GPU {MCPU} not available")
-
-                execute_kernel_and_verify(
-                    hsaco_path=hsaco_path,
-                    kernel_name=kernel_name,
-                    input_args=[A_flat, B_flat],
-                    output_args=[D_output],
-                    mcpu=MCPU,
-                    wavefront_size=WAVEFRONT_SIZE,
-                    grid_dim=(1, 1, 1),
-                    block_dim=(64, 1, 1),
-                )
-
-        # Expected: D = A @ B^T (note: MFMA computes A @ B^T, not A @ B)
         expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
         np.testing.assert_allclose(D_output, expected, rtol=1e-3, atol=1e-3)
 
@@ -199,62 +141,72 @@ class TestKittensGEMM:
 
     def test_gemm_16x16x32(self):
         """GEMM should compute C = A @ B^T correctly with K=32."""
-        mlir_file = get_mlir_file("test_gemm_16x16x32.mlir")
-        kernel_name = "gemm_16x16x32"
-        library_paths = get_kittens_library_paths()
-
-        # Create test matrices
-        # A: 16x32 f16, B: 16x32 f16
-        # Use small values to avoid overflow in f16
-        np.random.seed(42)  # Reproducibility
+        np.random.seed(42)
         A = (np.random.randn(16, 32) * 0.1).astype(np.float16)
         B = (np.random.randn(16, 32) * 0.1).astype(np.float16)
-
-        # Flatten for kernel input
         A_flat = A.flatten()
         B_flat = B.flatten()
-
-        # Output: 16x16 f32
         C_output = np.zeros(16 * 16, dtype=np.float32)
 
-        with ir.Context() as ctx:
-            asm_complete, module = compile_mlir_file_to_asm(
-                mlir_file,
-                kernel_name,
-                TEST_SYNCHRONOUS_SROA_PASS_PIPELINE,
-                ctx,
-                library_paths=library_paths,
-            )
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_gemm_16x16x32.mlir"),
+            kernel_name="gemm_16x16x32",
+            input_args=[A_flat, B_flat],
+            output_args=[C_output],
+        )
 
-            hsaco_path = utils.assemble_to_hsaco(
-                asm_complete, target=MCPU, wavefront_size=WAVEFRONT_SIZE
-            )
-            if hsaco_path is None:
-                raise RuntimeError("Failed to assemble kernel to HSACO")
+        expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
+        np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
 
-            with hsaco_file(hsaco_path):
-                if not utils.system_has_mcpu(mcpu=MCPU):
-                    print(asm_complete)
-                    pytest.skip(f"GPU {MCPU} not available")
 
-                execute_kernel_and_verify(
-                    hsaco_path=hsaco_path,
-                    kernel_name=kernel_name,
-                    input_args=[A_flat, B_flat],
-                    output_args=[C_output],
-                    mcpu=MCPU,
-                    wavefront_size=WAVEFRONT_SIZE,
-                    grid_dim=(1, 1, 1),
-                    block_dim=(64, 1, 1),
-                )
+class TestKittensGEMMLoop:
+    """Test GEMM with scf.for K-loop for arbitrary K values."""
 
-        # Expected: C = A @ B^T (MFMA computes A @ B^T)
+    @pytest.mark.parametrize("k", [32, 64, 128, 4096])
+    def test_gemm_16x16xK(self, k):
+        """GEMM should compute C = A @ B^T for various K values."""
+        k_tiles = k // 16
+        stride_ab = k * 2
+
+        np.random.seed(42 + k)
+        A = (np.random.randn(16, k) * 0.1).astype(np.float16)
+        B = (np.random.randn(16, k) * 0.1).astype(np.float16)
+        A_flat = A.flatten()
+        B_flat = B.flatten()
+        C_output = np.zeros(16 * 16, dtype=np.float32)
+
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_gemm_16x16xK.mlir"),
+            kernel_name="gemm_16x16xK",
+            input_args=[A_flat, B_flat],
+            output_args=[C_output],
+            pass_pipeline=TEST_SCF_PIPELINING_PASS_PIPELINE,
+            template_substitutions={
+                "{{K}}": str(k),
+                "{{K_TILES}}": str(k_tiles),
+                "{{STRIDE_AB}}": str(stride_ab),
+            },
+        )
+
         expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
         np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
 
 
 if __name__ == "__main__":
-    TestKittensZeroC().test_zero_C_produces_zeros()
-    TestKittensLoadStoreA().test_load_store_roundtrip()
-    TestKittensMFMA().test_mfma_matmul()
-    TestKittensGEMM().test_gemm_16x16x32()
+
+    def run_test(test_fn, *args, **kwargs):
+        """Run a test, handling pytest.skip gracefully when running without pytest."""
+        try:
+            test_fn(*args, **kwargs)
+            print("✓ PASS")
+        except pytest.skip.Exception as e:
+            print(f"⊘ SKIP: {e}")
+
+    run_test(TestKittensZeroC().test_zero_C_produces_zeros)
+    run_test(TestKittensLoadStoreA().test_load_store_roundtrip)
+    run_test(TestKittensMFMA().test_mfma_matmul)
+    run_test(TestKittensGEMM().test_gemm_16x16x32)
+    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=32)
+    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=64)
+    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=128)
+    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=4096)
