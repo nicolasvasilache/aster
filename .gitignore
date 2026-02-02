@@ -1,4 +1,4 @@
-/.aster/
+/.aster*/
 /.cache/
 *.hsaco*
 /.pytest_cache/
