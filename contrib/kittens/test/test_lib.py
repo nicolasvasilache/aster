@@ -1,9 +1,11 @@
 """Unit tests for kittens/tiles_16x16.mlir library functions."""
 
+import itertools
 import os
-import pytest
+from typing import Dict, List, Optional
+
 import numpy as np
-from typing import List, Optional, Dict
+import pytest
 
 from aster import ir
 from aster.pass_pipelines import (
@@ -231,99 +233,59 @@ class TestKittensGEMMLoop:
         np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
 
 
-class TestKittensGEMMLDS1Buffer:
-    """Test GEMM with single-buffer LDS (Phase 3 baseline)."""
-
-    @pytest.mark.parametrize("k", [32, 64, 128])
-    def test_gemm_lds_1buf(self, k):
-        """GEMM with single-buffer LDS should match reference."""
-        k_tiles = k // 16
-        stride_ab = k * 2
-
-        np.random.seed(42 + k)
-        A = (np.random.randn(16, k) * 0.1).astype(np.float16)
-        B = (np.random.randn(16, k) * 0.1).astype(np.float16)
-        A_flat = A.flatten()
-        B_flat = B.flatten()
-        C_output = np.zeros(16 * 16, dtype=np.float32)
-
-        run_kittens_kernel(
-            mlir_file=get_mlir_file("test_gemm_16x16xK_lds_1buf.mlir"),
-            kernel_name="gemm_16x16xK_lds_1buf",
-            input_args=[A_flat, B_flat],
-            output_args=[C_output],
-            pass_pipeline=TEST_SCF_PIPELINING_PASS_PIPELINE,
-            template_substitutions={
-                "{{K}}": str(k),
-                "{{K_TILES}}": str(k_tiles),
-                "{{STRIDE_AB}}": str(stride_ab),
-            },
-        )
-
-        expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
-        np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
+LDS_MODE_NAMES = {0: "nopad", 1: "padded", 2: "xor_swizzle"}
 
 
-class TestKittensGEMMLDS2Buffer:
-    """Test GEMM with double-buffer LDS (Phase 4 - latency hiding)."""
-
-    @pytest.mark.parametrize("k", [32, 64, 128])
-    def test_gemm_lds_2buf(self, k):
-        """GEMM with double-buffer LDS should match reference and show speedup."""
-        k_tiles = k // 16
-        stride_ab = k * 2
-
-        np.random.seed(42 + k)
-        A = (np.random.randn(16, k) * 0.1).astype(np.float16)
-        B = (np.random.randn(16, k) * 0.1).astype(np.float16)
-        A_flat = A.flatten()
-        B_flat = B.flatten()
-        C_output = np.zeros(16 * 16, dtype=np.float32)
-
-        run_kittens_kernel(
-            mlir_file=get_mlir_file("test_gemm_16x16xK_lds_2buf.mlir"),
-            kernel_name="gemm_16x16xK_lds_2buf",
-            input_args=[A_flat, B_flat],
-            output_args=[C_output],
-            pass_pipeline=TEST_SCF_PIPELINING_PASS_PIPELINE,
-            template_substitutions={
-                "{{K}}": str(k),
-                "{{K_TILES}}": str(k_tiles),
-                "{{STRIDE_AB}}": str(stride_ab),
-            },
-        )
-
-        expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
-        np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
+def lds_bytes_per_tile(lds_mode):
+    """Return bytes per LDS tile based on addressing mode."""
+    # Mode 0 (nopad) and 2 (xor_swizzle): 512 bytes/tile
+    # Mode 1 (padded): 544 bytes/tile
+    return 544 if lds_mode == 1 else 512
 
 
-class TestKittensGEMMLDS3Buffer:
-    """Test GEMM with triple-buffer LDS (Phase 5 - maximum latency hiding)."""
+def lds_substitutions(k, lds_mode, num_buffers):
+    """Build template substitutions for LDS GEMM tests."""
+    k_tiles = k // 16
+    stride_ab = k * 2
+    tile_bytes = lds_bytes_per_tile(lds_mode)
+    total_lds = tile_bytes * 2 * num_buffers  # 2 tiles (A+B) per buffer
+    return {
+        "{{K}}": str(k),
+        "{{K_TILES}}": str(k_tiles),
+        "{{STRIDE_AB}}": str(stride_ab),
+        "{{LDS_MODE}}": str(lds_mode),
+        "{{LDS_BYTES}}": str(total_lds),
+    }
 
-    @pytest.mark.parametrize("k", [48, 64, 96])
-    def test_gemm_lds_3buf(self, k):
-        """GEMM with triple-buffer LDS should match reference."""
-        k_tiles = k // 16
-        stride_ab = k * 2
+
+LDS_BUF_K_VALUES = {1: [32, 64, 128], 2: [32, 64, 128], 3: [48, 64, 96]}
+
+# Build (num_buffers, lds_mode) pairs with readable test IDs
+LDS_GEMM_PARAMS = list(itertools.product([1, 2, 3], [0, 1, 2]))
+LDS_GEMM_IDS = [f"{n}buf-{LDS_MODE_NAMES[m]}" for n, m in LDS_GEMM_PARAMS]
+
+
+class TestKittensGEMMLDS:
+    """Test GEMM with {1,2,3}-buffer LDS x {nopad, padded, xor_swizzle}."""
+
+    @pytest.mark.parametrize("num_buffers, lds_mode", LDS_GEMM_PARAMS, ids=LDS_GEMM_IDS)
+    @pytest.mark.parametrize("k", [32, 48, 64, 96, 128])
+    def test_gemm_lds(self, k, num_buffers, lds_mode):
+        if k not in LDS_BUF_K_VALUES[num_buffers]:
+            pytest.skip(f"k={k} not tested for {num_buffers}-buffer")
 
         np.random.seed(42 + k)
         A = (np.random.randn(16, k) * 0.1).astype(np.float16)
         B = (np.random.randn(16, k) * 0.1).astype(np.float16)
-        A_flat = A.flatten()
-        B_flat = B.flatten()
         C_output = np.zeros(16 * 16, dtype=np.float32)
 
         run_kittens_kernel(
-            mlir_file=get_mlir_file("test_gemm_16x16xK_lds_3buf.mlir"),
-            kernel_name="gemm_16x16xK_lds_3buf",
-            input_args=[A_flat, B_flat],
+            mlir_file=get_mlir_file(f"test_gemm_16x16xK_lds_{num_buffers}buf.mlir"),
+            kernel_name=f"gemm_16x16xK_lds_{num_buffers}buf",
+            input_args=[A.flatten(), B.flatten()],
             output_args=[C_output],
             pass_pipeline=TEST_SCF_PIPELINING_PASS_PIPELINE,
-            template_substitutions={
-                "{{K}}": str(k),
-                "{{K_TILES}}": str(k_tiles),
-                "{{STRIDE_AB}}": str(stride_ab),
-            },
+            template_substitutions=lds_substitutions(k, lds_mode, num_buffers),
         )
 
         expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
@@ -346,16 +308,13 @@ if __name__ == "__main__":
     run_test(TestKittensLDSRoundtrip().test_lds_roundtrip_f16)
     run_test(TestKittensLDSRoundtripXorSwizzle().test_lds_roundtrip_xor_swizzle_f16)
     run_test(TestKittensGEMM().test_gemm_16x16x32)
-    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=32)
-    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=64)
-    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=128)
-    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=4096)
-    run_test(TestKittensGEMMLDS1Buffer().test_gemm_lds_1buf, k=32)
-    run_test(TestKittensGEMMLDS1Buffer().test_gemm_lds_1buf, k=64)
-    run_test(TestKittensGEMMLDS1Buffer().test_gemm_lds_1buf, k=128)
-    run_test(TestKittensGEMMLDS2Buffer().test_gemm_lds_2buf, k=32)
-    run_test(TestKittensGEMMLDS2Buffer().test_gemm_lds_2buf, k=64)
-    run_test(TestKittensGEMMLDS2Buffer().test_gemm_lds_2buf, k=128)
-    run_test(TestKittensGEMMLDS3Buffer().test_gemm_lds_3buf, k=48)
-    run_test(TestKittensGEMMLDS3Buffer().test_gemm_lds_3buf, k=64)
-    run_test(TestKittensGEMMLDS3Buffer().test_gemm_lds_3buf, k=96)
+    for k in [32, 64, 128, 4096]:
+        run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=k)
+    for num_buffers, lds_mode in LDS_GEMM_PARAMS:
+        for k in LDS_BUF_K_VALUES[num_buffers]:
+            run_test(
+                TestKittensGEMMLDS().test_gemm_lds,
+                k=k,
+                num_buffers=num_buffers,
+                lds_mode=lds_mode,
+            )
