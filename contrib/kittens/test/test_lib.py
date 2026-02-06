@@ -39,6 +39,8 @@ def get_kittens_library_paths() -> List[str]:
     kittens_dir = os.path.join(os.path.dirname(__file__), "..", "library")
     kittens_paths = [
         os.path.join(kittens_dir, "tiles_16x16.mlir"),
+        os.path.join(kittens_dir, "lds_16x16.mlir"),
+        os.path.join(kittens_dir, "lds_transfers.mlir"),
     ]
     return base_paths + kittens_paths
 
@@ -294,6 +296,25 @@ class TestKittensGEMM4Wave:
         np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
 
 
+class TestKittensLDSRoundtrip:
+    """Test LDS roundtrip: Global -> LDS -> Register -> Global."""
+
+    def test_lds_roundtrip_f16(self):
+        """Data should survive Global -> LDS -> Register -> Global path."""
+        input_f16 = np.arange(16 * 16, dtype=np.float16)
+        input_data = input_f16.view(np.uint16)
+        output_data = np.full(16 * 16, 0xFFFF, dtype=np.uint16)
+
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_lds_roundtrip.mlir"),
+            kernel_name="test_lds_roundtrip",
+            input_args=[input_data],
+            output_args=[output_data],
+        )
+
+        np.testing.assert_array_equal(output_data, input_data)
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -327,6 +348,7 @@ if __name__ == "__main__":
         ("gemm_4wave_k32", TestKittensGEMM4Wave().test_gemm_4wave, [], {"k": 32}),
         ("gemm_4wave_k64", TestKittensGEMM4Wave().test_gemm_4wave, [], {"k": 64}),
         ("gemm_4wave_k128", TestKittensGEMM4Wave().test_gemm_4wave, [], {"k": 128}),
+        ("lds_roundtrip", TestKittensLDSRoundtrip().test_lds_roundtrip_f16, [], {}),
     ]
 
     parser = argparse.ArgumentParser(description="Run kittens tests")
