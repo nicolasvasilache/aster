@@ -82,6 +82,57 @@ amdgcn.library @kittens_lds_16x16 isa = [#amdgcn.isa<cdna3>] {
   }
 
   //===--------------------------------------------------------------------===//
+  // LDS Allocation Functions - No Padding (512 bytes/tile, HAS bank conflicts)
+  //===--------------------------------------------------------------------===//
+  // Same layout as XOR swizzle (512 bytes/tile) but with naive addressing.
+  // Provided as baseline to measure the cost of bank conflicts.
+
+  // 1-buffer: 2 tiles x 512 = 1,024 bytes total
+  func.func private @alloc_lds_1buffer_nopad() -> (index, index) {
+    %A_base = amdgcn.alloc_lds 512 offset 0
+    %B_base = amdgcn.alloc_lds 512 offset 512
+
+    %A_off = amdgcn.get_lds_offset %A_base : index
+    %B_off = amdgcn.get_lds_offset %B_base : index
+
+    return %A_off, %B_off : index, index
+  }
+
+  // 2-buffer (ping-pong): 4 tiles x 512 = 2,048 bytes total
+  func.func private @alloc_lds_2buffer_nopad() -> (index, index, index, index) {
+    %A0_alloc = amdgcn.alloc_lds 512 offset 0
+    %B0_alloc = amdgcn.alloc_lds 512 offset 512
+    %A1_alloc = amdgcn.alloc_lds 512 offset 1024
+    %B1_alloc = amdgcn.alloc_lds 512 offset 1536
+
+    %A0 = amdgcn.get_lds_offset %A0_alloc : index
+    %B0 = amdgcn.get_lds_offset %B0_alloc : index
+    %A1 = amdgcn.get_lds_offset %A1_alloc : index
+    %B1 = amdgcn.get_lds_offset %B1_alloc : index
+
+    return %A0, %B0, %A1, %B1 : index, index, index, index
+  }
+
+  // 3-buffer (triple): 6 tiles x 512 = 3,072 bytes total
+  func.func private @alloc_lds_3buffer_nopad() -> (index, index, index, index, index, index) {
+    %A0_alloc = amdgcn.alloc_lds 512 offset 0
+    %B0_alloc = amdgcn.alloc_lds 512 offset 512
+    %A1_alloc = amdgcn.alloc_lds 512 offset 1024
+    %B1_alloc = amdgcn.alloc_lds 512 offset 1536
+    %A2_alloc = amdgcn.alloc_lds 512 offset 2048
+    %B2_alloc = amdgcn.alloc_lds 512 offset 2560
+
+    %A0 = amdgcn.get_lds_offset %A0_alloc : index
+    %B0 = amdgcn.get_lds_offset %B0_alloc : index
+    %A1 = amdgcn.get_lds_offset %A1_alloc : index
+    %B1 = amdgcn.get_lds_offset %B1_alloc : index
+    %A2 = amdgcn.get_lds_offset %A2_alloc : index
+    %B2 = amdgcn.get_lds_offset %B2_alloc : index
+
+    return %A0, %B0, %A1, %B1, %A2, %B2 : index, index, index, index, index, index
+  }
+
+  //===--------------------------------------------------------------------===//
   // LDS Allocation Functions - XOR Swizzle (512 bytes/tile)
   //===--------------------------------------------------------------------===//
 
@@ -133,6 +184,20 @@ amdgcn.library @kittens_lds_16x16 isa = [#amdgcn.isa<cdna3>] {
   //===--------------------------------------------------------------------===//
   // LDS Addressing Functions
   //===--------------------------------------------------------------------===//
+
+  // Non-padded addressing: stride = 16 columns (32 bytes/row), no overhead.
+  // offset = tile_base + row * 32 + col * 2
+  // Has LDS bank conflicts - provided as baseline for comparison.
+  // Must pair with @alloc_lds_Nbuffer_nopad() (512-byte tiles).
+  func.func private @lds_element_offset_nopad(
+      %tile_base: index,
+      %row: index,
+      %col: index
+  ) -> index {
+    %offset = affine.apply affine_map<()[base, row, col] -> (base + row * 32 + col * 2)>
+        ()[%tile_base, %row, %col]
+    return %offset : index
+  }
 
   // Padded addressing: stride = 17 columns (34 bytes/row), wastes 6% LDS.
   // offset = tile_base + row * 34 + col * 2

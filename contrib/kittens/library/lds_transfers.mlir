@@ -163,6 +163,74 @@ amdgcn.library @kittens_lds_transfers isa = [#amdgcn.isa<cdna3>] {
   }
 
   //===--------------------------------------------------------------------===//
+  // Non-Padded Variants (bank conflicts - baseline for comparison)
+  //===--------------------------------------------------------------------===//
+  // Same as padded but using @lds_element_offset_nopad for addressing.
+  // Pair with @alloc_lds_Nbuffer_nopad() (512-byte tiles).
+
+  func.func private @lds_element_offset_nopad(index, index, index) -> index
+
+  func.func private @load_global_to_lds_nopad_f16(
+      %lds_tile_base: index,
+      %global_ptr: !sx2,
+      %m: index,
+      %n: index,
+      %stride: index
+  ) {
+    %row, %col = func.call @thread_lds_slice() : () -> (index, index)
+
+    %elt_size = arith.constant 2 : index
+    %desc = aster_utils.struct_create(%m, %n, %row, %col, %stride, %elt_size)
+        : (index, index, index, index, index, index) -> !index_descriptor_2level_2d
+    %global_off_vgpr = func.call @tiled_matrix_offset(%desc)
+        : (!index_descriptor_2level_2d) -> !v
+
+    %c0_i32 = arith.constant 0 : i32
+    %tmp_reg = func.call @alloc_vgprx2() : () -> !vx2
+    %loaded, %tok_global = amdgcn.load global_load_dwordx2 dest %tmp_reg addr %global_ptr
+        offset d(%global_off_vgpr) + c(%c0_i32)
+        : dps(!vx2) ins(!sx2, !v, i32) -> !amdgcn.read_token<flat>
+    amdgcn.wait deps %tok_global : !amdgcn.read_token<flat>
+
+    %lds_offset_idx = func.call @lds_element_offset_nopad(%lds_tile_base, %row, %col)
+        : (index, index, index) -> index
+    %lds_offset_i32 = arith.index_cast %lds_offset_idx : index to i32
+    %lds_addr = lsir.to_reg %lds_offset_i32 : i32 -> !v
+
+    %c0_i32_2 = arith.constant 0 : i32
+    %tok_lds = amdgcn.store ds_write_b64 data %loaded addr %lds_addr offset c(%c0_i32_2)
+        : ins(!vx2, !v, i32) -> !amdgcn.write_token<shared>
+    amdgcn.wait deps %tok_lds : !amdgcn.write_token<shared>
+
+    return
+  }
+
+  func.func private @load_lds_to_register_A_nopad_f16(%lds_tile_base: index) -> !rt_A_f16 {
+    %mfma_idx = func.call @mfma_index_A_16x16xf16() : () -> !index_pair
+    %row, %col = aster_utils.struct_extract %mfma_idx ["i", "j"]
+        : !index_pair -> index, index
+
+    %lds_offset_idx = func.call @lds_element_offset_nopad(%lds_tile_base, %row, %col)
+        : (index, index, index) -> index
+    %lds_offset_i32 = arith.index_cast %lds_offset_idx : index to i32
+    %lds_addr = lsir.to_reg %lds_offset_i32 : i32 -> !v
+
+    %dst = func.call @alloc_vgprx2() : () -> !vx2
+    %c0 = arith.constant 0 : i32
+    %result, %tok = amdgcn.load ds_read_b64 dest %dst addr %lds_addr offset c(%c0)
+        : dps(!vx2) ins(!v, i32) -> !amdgcn.read_token<shared>
+    amdgcn.wait deps %tok : !amdgcn.read_token<shared>
+
+    return %result : !rt_A_f16
+  }
+
+  func.func private @load_lds_to_register_B_nopad_f16(%lds_tile_base: index) -> !rt_B_f16 {
+    %result = func.call @load_lds_to_register_A_nopad_f16(%lds_tile_base)
+        : (index) -> !rt_A_f16
+    return %result : !rt_B_f16
+  }
+
+  //===--------------------------------------------------------------------===//
   // XOR Swizzle Variants
   //===--------------------------------------------------------------------===//
   // Same as above but using @lds_element_offset_xor_swizzle for addressing.
@@ -220,6 +288,12 @@ amdgcn.library @kittens_lds_transfers isa = [#amdgcn.isa<cdna3>] {
     amdgcn.wait deps %tok : !amdgcn.read_token<shared>
 
     return %result : !rt_A_f16
+  }
+
+  func.func private @load_lds_to_register_B_xor_swizzle_f16(%lds_tile_base: index) -> !rt_B_f16 {
+    %result = func.call @load_lds_to_register_A_xor_swizzle_f16(%lds_tile_base)
+        : (index) -> !rt_A_f16
+    return %result : !rt_B_f16
   }
 
   func.func private @load_global_to_register_A_via_lds_xor_swizzle_f16(
