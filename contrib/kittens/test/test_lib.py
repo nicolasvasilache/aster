@@ -180,6 +180,25 @@ class TestKittensLDSRoundtrip:
         np.testing.assert_array_equal(output_data, input_data)
 
 
+class TestKittensLDSRoundtripXorSwizzle:
+    """Test LDS roundtrip with XOR swizzle: Global -> LDS -> Register -> Global."""
+
+    def test_lds_roundtrip_xor_swizzle_f16(self):
+        """Data should survive Global -> LDS (XOR swizzle) -> Register -> Global path."""
+        input_f16 = np.arange(16 * 16, dtype=np.float16)
+        input_data = input_f16.view(np.uint16)
+        output_data = np.full(16 * 16, 0xFFFF, dtype=np.uint16)
+
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_lds_roundtrip_xor_swizzle.mlir"),
+            kernel_name="test_lds_roundtrip_xor_swizzle",
+            input_args=[input_data],
+            output_args=[output_data],
+        )
+
+        np.testing.assert_array_equal(output_data, input_data)
+
+
 class TestKittensGEMMLoop:
     """Test GEMM with scf.for K-loop for arbitrary K values."""
 
@@ -326,6 +345,7 @@ if __name__ == "__main__":
     run_test(TestKittensLoadStoreA().test_load_store_roundtrip)
     run_test(TestKittensMFMA().test_mfma_matmul)
     run_test(TestKittensLDSRoundtrip().test_lds_roundtrip_f16)
+    run_test(TestKittensLDSRoundtripXorSwizzle().test_lds_roundtrip_xor_swizzle_f16)
     run_test(TestKittensGEMM().test_gemm_16x16x32)
     run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=32)
     run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=64)
