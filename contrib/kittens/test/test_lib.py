@@ -24,6 +24,8 @@ def get_kittens_library_paths() -> List[str]:
     kittens_dir = os.path.join(os.path.dirname(__file__), "..", "library")
     kittens_paths = [
         os.path.join(kittens_dir, "tiles_16x16.mlir"),
+        os.path.join(kittens_dir, "lds_16x16.mlir"),
+        os.path.join(kittens_dir, "lds_transfers.mlir"),
     ]
     return base_paths + kittens_paths
 
@@ -159,6 +161,25 @@ class TestKittensGEMM:
         np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
 
 
+class TestKittensLDSRoundtrip:
+    """Test LDS roundtrip: Global -> LDS -> Register -> Global."""
+
+    def test_lds_roundtrip_f16(self):
+        """Data should survive Global -> LDS -> Register -> Global path."""
+        input_f16 = np.arange(16 * 16, dtype=np.float16)
+        input_data = input_f16.view(np.uint16)
+        output_data = np.full(16 * 16, 0xFFFF, dtype=np.uint16)
+
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_lds_roundtrip.mlir"),
+            kernel_name="test_lds_roundtrip",
+            input_args=[input_data],
+            output_args=[output_data],
+        )
+
+        np.testing.assert_array_equal(output_data, input_data)
+
+
 class TestKittensGEMMLoop:
     """Test GEMM with scf.for K-loop for arbitrary K values."""
 
@@ -198,13 +219,14 @@ if __name__ == "__main__":
         """Run a test, handling pytest.skip gracefully when running without pytest."""
         try:
             test_fn(*args, **kwargs)
-            print("✓ PASS")
+            print("PASS")
         except pytest.skip.Exception as e:
-            print(f"⊘ SKIP: {e}")
+            print(f"SKIP: {e}")
 
     run_test(TestKittensZeroC().test_zero_C_produces_zeros)
     run_test(TestKittensLoadStoreA().test_load_store_roundtrip)
     run_test(TestKittensMFMA().test_mfma_matmul)
+    run_test(TestKittensLDSRoundtrip().test_lds_roundtrip_f16)
     run_test(TestKittensGEMM().test_gemm_16x16x32)
     run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=32)
     run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=64)
