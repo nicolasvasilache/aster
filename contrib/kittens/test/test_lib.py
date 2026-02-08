@@ -43,6 +43,8 @@ def run_kittens_kernel(
     output_args: List[np.ndarray],
     pass_pipeline: str = TEST_SCF_PIPELINING_PASS_PIPELINE,
     template_substitutions: Optional[Dict[str, str]] = None,
+    print_ir_after_all: bool = False,
+    print_preprocessed_ir: bool = False,
 ) -> None:
     """Thin wrapper around compile_and_run_kernel for kittens tests."""
     # Print test information
@@ -77,6 +79,8 @@ def run_kittens_kernel(
             library_paths=get_kittens_library_paths(),
             num_iterations=1,
             skip_on_cross_compile=True,
+            print_ir_after_all=print_ir_after_all,
+            print_preprocessed_ir=print_preprocessed_ir,
         )
 
 
@@ -255,6 +259,7 @@ def lds_substitutions(k, lds_mode, num_buffers):
         "{{STRIDE_AB}}": str(stride_ab),
         "{{LDS_MODE}}": str(lds_mode),
         "{{LDS_BYTES}}": str(total_lds),
+        "{{LDS_TILE_BYTES}}": str(tile_bytes),
     }
 
 
@@ -292,6 +297,55 @@ class TestKittensGEMMLDS:
         np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
 
 
+PIPELINE_STAGE_CONFIGS = {
+    # num_stages: (STAGE_LOAD, STAGE_SYNC, STAGE_COMPUTE)
+    2: (0, 1, 1),
+    3: (0, 1, 2),
+}
+
+
+def pipelined_substitutions(k, lds_mode, num_stages):
+    """Build template substitutions for pipelined GEMM tests."""
+    stage_load, stage_sync, stage_compute = PIPELINE_STAGE_CONFIGS[num_stages]
+    # Single buffer in the source IR; the pass replicates as needed
+    subs = lds_substitutions(k, lds_mode, num_buffers=1)
+    subs["{{STAGE_LOAD}}"] = str(stage_load)
+    subs["{{STAGE_SYNC}}"] = str(stage_sync)
+    subs["{{STAGE_COMPUTE}}"] = str(stage_compute)
+    return subs
+
+
+# (num_stages, lds_mode) pairs
+PIPELINED_PARAMS = list(itertools.product([2, 3], [0, 1, 2]))
+PIPELINED_IDS = [f"{n}stage-{LDS_MODE_NAMES[m]}" for n, m in PIPELINED_PARAMS]
+
+
+class TestKittensGEMMLDSPipelined:
+    """Test GEMM via aster-scf-pipeline (single source -> 2/3-stage pipeline)."""
+
+    @pytest.mark.parametrize(
+        "num_stages, lds_mode", PIPELINED_PARAMS, ids=PIPELINED_IDS
+    )
+    @pytest.mark.parametrize("k", [64, 128])
+    def test_gemm_lds_pipelined(self, k, num_stages, lds_mode):
+        np.random.seed(42 + k)
+        A = (np.random.randn(16, k) * 0.1).astype(np.float16)
+        B = (np.random.randn(16, k) * 0.1).astype(np.float16)
+        C_output = np.zeros(16 * 16, dtype=np.float32)
+
+        run_kittens_kernel(
+            mlir_file=get_mlir_file("test_gemm_16x16xK_lds_pipelined.mlir"),
+            kernel_name="gemm_16x16xK_lds_pipelined",
+            input_args=[A.flatten(), B.flatten()],
+            output_args=[C_output],
+            pass_pipeline=TEST_SCF_PIPELINING_PASS_PIPELINE,
+            template_substitutions=pipelined_substitutions(k, lds_mode, num_stages),
+        )
+
+        expected = (A.astype(np.float32) @ B.astype(np.float32).T).flatten()
+        np.testing.assert_allclose(C_output, expected, rtol=1e-2, atol=1e-2)
+
+
 if __name__ == "__main__":
 
     def run_test(test_fn, *args, **kwargs):
@@ -316,5 +370,13 @@ if __name__ == "__main__":
                 TestKittensGEMMLDS().test_gemm_lds,
                 k=k,
                 num_buffers=num_buffers,
+                lds_mode=lds_mode,
+            )
+    for num_stages, lds_mode in PIPELINED_PARAMS:
+        for k in [64, 128]:
+            run_test(
+                TestKittensGEMMLDSPipelined().test_gemm_lds_pipelined,
+                k=k,
+                num_stages=num_stages,
                 lds_mode=lds_mode,
             )
