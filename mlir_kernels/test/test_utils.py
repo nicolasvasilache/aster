@@ -141,13 +141,14 @@ def compile_and_run_kernel(
     output_args: List[np.ndarray],
     grid_dim: Tuple[int, int, int],
     block_dim: Tuple[int, int, int],
-    verify_fn: Callable,
+    verify_fn: Optional[Callable] = None,
     mcpu: str = "gfx942",
     wavefront_size: int = 64,
     preprocess: Optional[Callable[[str], str]] = None,
     library_paths: Optional[List[str]] = None,
     print_timings: bool = False,
     print_ir_after_all: bool = False,
+    print_preprocessed_ir: bool = False,
     num_iterations: int = 5,
     skip_on_cross_compile: bool = False,
 ) -> Optional[List[int]]:
@@ -166,6 +167,7 @@ def compile_and_run_kernel(
         library_paths=library_paths or [],
         print_timings=print_timings,
         print_ir_after_all=print_ir_after_all,
+        print_preprocessed_ir=print_preprocessed_ir,
     )
 
     hsaco_path = utils.assemble_to_hsaco(

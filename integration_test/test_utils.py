@@ -105,7 +105,10 @@ def hsaco_file(path: str) -> Generator[str, None, None]:
 
 
 def load_mlir_module_from_file(
-    file_path: str, ctx, preprocess: Optional[Callable[[str], str]] = None
+    file_path: str,
+    ctx,
+    preprocess: Optional[Callable[[str], str]] = None,
+    print_preprocessed_ir: bool = False,
 ):
     """Load MLIR module from file.
 
@@ -122,6 +125,9 @@ def load_mlir_module_from_file(
     if preprocess is not None:
         mlir_content = preprocess(mlir_content)
 
+    if print_preprocessed_ir:
+        print(f"Preprocessed IR from {file_path}:\n{mlir_content}", flush=True)
+
     # Enable unregistered dialects to allow parsing MLIR with unregistered dialects
     ctx.allow_unregistered_dialects = True
 
@@ -137,6 +143,7 @@ def compile_mlir_file_to_asm(
     ctx,
     preprocess: Optional[Callable[[str], str]] = None,
     print_ir_after_all: bool = False,
+    print_preprocessed_ir: bool = False,
     library_paths: Optional[List[str]] = None,
     print_timings: bool = False,
 ) -> Tuple[str, Any]:
@@ -157,7 +164,9 @@ def compile_mlir_file_to_asm(
     logger = _get_logger()
     _log_info(logger, f"[COMPILE] Loading MLIR file: {os.path.basename(mlir_file)}")
 
-    module = load_mlir_module_from_file(mlir_file, ctx, preprocess)
+    module = load_mlir_module_from_file(
+        mlir_file, ctx, preprocess, print_preprocessed_ir
+    )
 
     # Apply passes
     from aster._mlir_libs._mlir import passmanager
