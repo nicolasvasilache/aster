@@ -127,6 +127,8 @@ PHASE_CONVERT_LDS_BUFFERS = (
 PHASE_LOWER_TO_AMDGCN = (
     "aster-to-int-arith",
     "aster-optimize-arith",
+    "canonicalize", "cse",
+    "aster-resolve-any-iter-args",
     "aster-amdgcn-set-abi", # "func.func(aster-amdgcn-set-abi)",
     # Convert SCF control flow to AMDGCN control flow
     # Note: control flow support is very limited atm, add NORMAL FORMS

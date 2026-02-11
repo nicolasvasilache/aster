@@ -76,6 +76,28 @@ def DestructureStructIterArgs : Pass<"aster-destructure-struct-iter-args"> {
   ];
 }
 
+def ResolveAnyIterArgs : Pass<"aster-resolve-any-iter-args"> {
+  let summary = "Resolve any-typed scf.for iter_args to concrete types";
+  let description = [{
+    This pass specializes `!aster_utils.any`-typed iter_args in scf.for loops
+    to their concrete types by analyzing the to_any/from_any chain:
+    - Init value must be `to_any %x : T`
+    - Yield value must be `to_any %y : T` (same T)
+    - All block arg uses must be `from_any ... : T`
+    - All result uses must be `from_any ... : T`
+
+    When all conditions hold, the iter_arg type is changed to T, and the
+    to_any/from_any wrappers are bypassed.
+
+    This is needed after struct destructuring of pipelined loops, where the
+    `value: !aster_utils.any` field of future structs becomes a bare any-typed
+    iter_arg.
+  }];
+  let dependentDialects = [
+    "mlir::aster::aster_utils::AsterUtilsDialect"
+  ];
+}
+
 def FromAnyToPoison : Pass<"aster-from-any-to-poison"> {
   let summary = "Transform FromAnyOp to ub.poison";
   let description = [{
