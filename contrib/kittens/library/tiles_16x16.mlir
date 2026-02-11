@@ -8,6 +8,12 @@
 !vx2 = !amdgcn.vgpr_range<[? + 2]>
 !vx4 = !amdgcn.vgpr_range<[? + 4]>
 
+// Token types for async memory operations
+!write_token = !amdgcn.write_token<flat>
+
+// Future types from futures.mlir
+!future_global_read = !aster_utils.struct<value: !aster_utils.any, token: !amdgcn.read_token<flat>>
+
 // Descriptor types from indexing.mlir
 !index_pair = !aster_utils.struct<i: index, j: index>
 !index_descriptor_2d = !aster_utils.struct<i: index, j: index, stride: index, elt_size_b: index>
@@ -31,6 +37,8 @@ amdgcn.library @kittens_tiles_16x16 isa = [#amdgcn.isa<cdna3>] {
   func.func private @mfma_index_C_16x16xf32() -> !index_pair
   func.func private @tiled_matrix_offset(!index_descriptor_2level_2d) -> !v
   func.func private @matrix_offset(!index_descriptor_2d) -> !v
+  // From futures.mlir
+  func.func private @get_global_load_value_vx2(!future_global_read) -> !vx2
 
   //===--------------------------------------------------------------------===//
   // Tile initialization functions
@@ -52,14 +60,16 @@ amdgcn.library @kittens_tiles_16x16 isa = [#amdgcn.isa<cdna3>] {
   // Each thread loads 4xf16 (8 bytes) via global_load_dwordx2.
   // Lane i loads from row (i % 16), cols [(i/16)*4, (i/16)*4 + 4).
   //
+  // Returns a future; call @get_A_f16 to wait and extract the tile value.
+  //
   // Parameters:
   //   %ptr: base pointer to the matrix
   //   %m: row position of tile in elements
   //   %n: column position of tile in elements
   //   %stride: row stride in bytes
   //
-  // Returns: !rt_A_f16 (= !vx2) with loaded data
-  func.func private @load_A_f16(%ptr: !sx2, %m: index, %n: index, %stride: index) -> !rt_A_f16 {
+  // Returns: !future_global_read wrapping !rt_A_f16
+  func.func private @load_A_f16(%ptr: !sx2, %m: index, %n: index, %stride: index) -> !future_global_read {
     // Get MFMA A index for this lane: (row, col) where each lane handles 4 elements
     %mfma_idx = func.call @mfma_index_A_16x16xf16() : () -> !index_pair
     %row, %col = aster_utils.struct_extract %mfma_idx ["i", "j"] : !index_pair -> index, index
@@ -74,7 +84,14 @@ amdgcn.library @kittens_tiles_16x16 isa = [#amdgcn.isa<cdna3>] {
     %dst = func.call @alloc_vgprx2() : () -> !vx2
     %result, %tok = amdgcn.load global_load_dwordx2 dest %dst addr %ptr offset d(%off_reg) + c(%c0) : dps(!vx2) ins(!sx2, !v, i32) -> !amdgcn.read_token<flat>
 
-    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> vmcnt = 0
+    %value_any = aster_utils.to_any %result : !vx2
+    %future = aster_utils.struct_create(%value_any, %tok) : (!aster_utils.any, !amdgcn.read_token<flat>) -> !future_global_read
+    return %future : !future_global_read
+  }
+
+  // Wait for a pending A tile load and extract the value.
+  func.func private @get_A_f16(%future: !future_global_read) -> !rt_A_f16 {
+    %result = func.call @get_global_load_value_vx2(%future) : (!future_global_read) -> !vx2
     return %result : !rt_A_f16
   }
 
@@ -82,14 +99,16 @@ amdgcn.library @kittens_tiles_16x16 isa = [#amdgcn.isa<cdna3>] {
   // Uses the same physical layout as A since MFMA computes A @ B^T internally.
   // Each thread loads 4xf16 (8 bytes) via global_load_dwordx2.
   //
+  // Returns a future; call @get_B_f16 to wait and extract the tile value.
+  //
   // Parameters:
   //   %ptr: base pointer to the matrix
   //   %m: row position of tile in elements
   //   %n: column position of tile in elements
   //   %stride: row stride in bytes
   //
-  // Returns: !rt_B_f16 (= !vx2) with loaded data
-  func.func private @load_B_f16(%ptr: !sx2, %m: index, %n: index, %stride: index) -> !rt_B_f16 {
+  // Returns: !future_global_read wrapping !rt_B_f16
+  func.func private @load_B_f16(%ptr: !sx2, %m: index, %n: index, %stride: index) -> !future_global_read {
     // B uses same physical layout as A for loading from row-major memory
     // (MFMA handles the transpose internally)
     %mfma_idx = func.call @mfma_index_A_16x16xf16() : () -> !index_pair
@@ -105,7 +124,14 @@ amdgcn.library @kittens_tiles_16x16 isa = [#amdgcn.isa<cdna3>] {
     %dst = func.call @alloc_vgprx2() : () -> !vx2
     %result, %tok = amdgcn.load global_load_dwordx2 dest %dst addr %ptr offset d(%off_reg) + c(%c0) : dps(!vx2) ins(!sx2, !v, i32) -> !amdgcn.read_token<flat>
 
-    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> vmcnt = 0
+    %value_any = aster_utils.to_any %result : !vx2
+    %future = aster_utils.struct_create(%value_any, %tok) : (!aster_utils.any, !amdgcn.read_token<flat>) -> !future_global_read
+    return %future : !future_global_read
+  }
+
+  // Wait for a pending B tile load and extract the value.
+  func.func private @get_B_f16(%future: !future_global_read) -> !rt_B_f16 {
+    %result = func.call @get_global_load_value_vx2(%future) : (!future_global_read) -> !vx2
     return %result : !rt_B_f16
   }
 
@@ -123,7 +149,7 @@ amdgcn.library @kittens_tiles_16x16 isa = [#amdgcn.isa<cdna3>] {
   //   %m: row position of tile in elements
   //   %n: column position of tile in elements
   //   %stride: row stride in bytes
-  func.func private @store_A_f16(%tile: !rt_A_f16, %ptr: !sx2, %m: index, %n: index, %stride: index) {
+  func.func private @store_A_f16(%tile: !rt_A_f16, %ptr: !sx2, %m: index, %n: index, %stride: index) -> !write_token {
     // Get MFMA A index for this lane
     %mfma_idx = func.call @mfma_index_A_16x16xf16() : () -> !index_pair
     %row, %col = aster_utils.struct_extract %mfma_idx ["i", "j"] : !index_pair -> index, index
@@ -137,8 +163,7 @@ amdgcn.library @kittens_tiles_16x16 isa = [#amdgcn.isa<cdna3>] {
     %c0 = arith.constant 0 : i32
     %tok = amdgcn.store global_store_dwordx2 data %tile addr %ptr offset d(%off_reg) + c(%c0) : ins(!vx2, !sx2, !v, i32) -> !amdgcn.write_token<flat>
 
-    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> vmcnt = 0
-    return
+    return %tok : !write_token
   }
 
   //===--------------------------------------------------------------------===//
@@ -164,6 +189,22 @@ amdgcn.library @kittens_tiles_16x16 isa = [#amdgcn.isa<cdna3>] {
     return %result : !rt_C_f32
   }
 
+  // Future-accepting variant: waits for A and B loads, then performs MFMA.
+  // Convenience wrapper for the common pattern of load -> wait -> mfma.
+  //
+  // Parameters:
+  //   %A_future: pending A tile load
+  //   %B_future: pending B tile load
+  //   %C: !rt_C_f32 - C accumulator (16x16 f32 tile)
+  //
+  // Returns: !rt_C_f32 - D result (16x16 f32 tile)
+  func.func private @mfma_f32_16x16x16_f16_future(%A_future: !future_global_read, %B_future: !future_global_read, %C: !rt_C_f32) -> !rt_C_f32 {
+    %A = func.call @get_A_f16(%A_future) : (!future_global_read) -> !rt_A_f16
+    %B = func.call @get_B_f16(%B_future) : (!future_global_read) -> !rt_B_f16
+    %result = func.call @mfma_f32_16x16x16_f16(%A, %B, %C) : (!rt_A_f16, !rt_B_f16, !rt_C_f32) -> !rt_C_f32
+    return %result : !rt_C_f32
+  }
+
   //===--------------------------------------------------------------------===//
   // Global memory store functions for C tile (Phase 4)
   //===--------------------------------------------------------------------===//
@@ -175,13 +216,17 @@ amdgcn.library @kittens_tiles_16x16 isa = [#amdgcn.isa<cdna3>] {
   // Since these 4 values are non-contiguous in row-major memory (separated by
   // stride), we perform 4 separate global_store_dword operations.
   //
+  // Returns the last write token. The 3 earlier store tokens are not returned,
+  // but WaitAnalysis will conservatively insert proper s_waitcnt instructions
+  // for all outstanding stores when this token is waited on.
+  //
   // Parameters:
   //   %tile: !rt_C_f32 (= !vx4) tile data to store
   //   %ptr: base pointer to the matrix
   //   %m: row position of tile in elements
   //   %n: column position of tile in elements
   //   %stride: row stride in bytes
-  func.func private @store_C_f32(%tile: !rt_C_f32, %ptr: !sx2, %m: index, %n: index, %stride: index) {
+  func.func private @store_C_f32(%tile: !rt_C_f32, %ptr: !sx2, %m: index, %n: index, %stride: index) -> !write_token {
     // Get MFMA C index for this lane.
     // mfma_index_C returns (i, j) where:
     //   i = lane_id % 16  -> column position in C matrix
@@ -230,7 +275,6 @@ amdgcn.library @kittens_tiles_16x16 isa = [#amdgcn.isa<cdna3>] {
     %off3 = func.call @tiled_matrix_offset(%desc3) : (!index_descriptor_2level_2d) -> !v
     %tok3 = amdgcn.store global_store_dword data %v3 addr %ptr offset d(%off3) + c(%c0_i32) : ins(!v, !sx2, !v, i32) -> !amdgcn.write_token<flat>
 
-    amdgcn.sopp.s_waitcnt #amdgcn.inst<s_waitcnt> vmcnt = 0
-    return
+    return %tok3 : !write_token
   }
 }
