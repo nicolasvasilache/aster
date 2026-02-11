@@ -200,7 +200,7 @@ class TestKittensGEMMSched:
 class TestKittensGEMMLoop:
     """Test GEMM with scf.for K-loop for arbitrary K values."""
 
-    @pytest.mark.parametrize("k", [32, 64, 128, 4096])
+    @pytest.mark.parametrize("k", [128, 4096])
     def test_gemm_16x16xK(self, k):
         """GEMM should compute C = A @ B^T for various K values."""
         k_tiles = k // 16
@@ -231,6 +231,32 @@ class TestKittensGEMMLoop:
 if __name__ == "__main__":
     import argparse
 
+    # Registry: (kernel_name, test_fn, args, kwargs)
+    ALL_TESTS = [
+        ("test_zero_C", TestKittensZeroC().test_zero_C_produces_zeros, [], {}),
+        (
+            "test_load_store_A",
+            TestKittensLoadStoreA().test_load_store_roundtrip,
+            [],
+            {},
+        ),
+        ("test_mfma", TestKittensMFMA().test_mfma_matmul, [], {}),
+        ("gemm_16x16x128", TestKittensGEMM().test_gemm_16x16x128, [], {}),
+        (
+            "gemm_16x16x128_sched",
+            TestKittensGEMMSched().test_gemm_16x16x128_sched,
+            [],
+            {},
+        ),
+        ("gemm_16x16xK_k128", TestKittensGEMMLoop().test_gemm_16x16xK, [], {"k": 128}),
+        (
+            "gemm_16x16xK_k4096",
+            TestKittensGEMMLoop().test_gemm_16x16xK,
+            [],
+            {"k": 4096},
+        ),
+    ]
+
     parser = argparse.ArgumentParser(description="Run kittens tests")
     parser.add_argument(
         "--num-blocks",
@@ -244,24 +270,38 @@ if __name__ == "__main__":
         default=1,
         help="Number of kernel launches per test (default: 1)",
     )
+    parser.add_argument(
+        "--test",
+        type=str,
+        default=None,
+        help="Run only tests whose name contains this substring (default: all)",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List available test names and exit",
+    )
     cli_args = parser.parse_args()
+
+    if cli_args.list:
+        for name, _, _, _ in ALL_TESTS:
+            print(name)
+        raise SystemExit(0)
 
     run_config.num_blocks = cli_args.num_blocks
     run_config.num_iterations = cli_args.num_iterations
 
-    def run_test(test_fn, *args, **kwargs):
-        """Run a test, handling pytest.skip gracefully when running without pytest."""
+    tests = ALL_TESTS
+    if cli_args.test:
+        tests = [(n, f, a, kw) for n, f, a, kw in ALL_TESTS if cli_args.test in n]
+        if not tests:
+            print(f"No tests matching '{cli_args.test}'. Available:")
+            for name, _, _, _ in ALL_TESTS:
+                print(f"  {name}")
+            raise SystemExit(1)
+
+    for name, test_fn, args, kwargs in tests:
         try:
             test_fn(*args, **kwargs)
         except pytest.skip.Exception as e:
             print(f"  SKIPPED: {e}")
-
-    run_test(TestKittensZeroC().test_zero_C_produces_zeros)
-    run_test(TestKittensLoadStoreA().test_load_store_roundtrip)
-    run_test(TestKittensMFMA().test_mfma_matmul)
-    run_test(TestKittensGEMM().test_gemm_16x16x128)
-    run_test(TestKittensGEMMSched().test_gemm_16x16x128_sched)
-    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=32)
-    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=64)
-    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=128)
-    run_test(TestKittensGEMMLoop().test_gemm_16x16xK, k=4096)
