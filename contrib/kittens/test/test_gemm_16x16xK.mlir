@@ -55,7 +55,7 @@ amdgcn.module @kittens_gemm_16x16xK target = #amdgcn.target<gfx942> isa = #amdgc
     %C_init = func.call @zero_C() : () -> !rt_C_f32
 
     // K-loop: loads at stage 0, compute at stage 4.
-    // The pipeliner will peel 4 prologue iterations (loads only)
+    // The pipeliner will peel 1 prologue iterations (loads only)
     // and 4 epilogue iterations (compute only).
     %C_final = scf.for %k = %c0 to %K_tiles step %c1 iter_args(%acc = %C_init) -> (!rt_C_f32) {
       %k_offset = arith.muli %k, %c16 : index
@@ -66,9 +66,9 @@ amdgcn.module @kittens_gemm_16x16xK target = #amdgcn.target<gfx942> isa = #amdgc
       %B_fut = func.call @load_B_f16(%B_ptr, %c0, %k_offset, %stride_AB)
           {sched.stage = 0 : i32} : (!sx2, index, index, index) -> !future_global_read
 
-      // Stage 4: wait + MFMA (consumes futures from 4 iterations ago)
+      // Stage 4: wait + MFMA (consumes futures from 1 iterations ago)
       %new_acc = func.call @mfma_f32_16x16x16_f16_future(%A_fut, %B_fut, %acc)
-          {sched.stage = 4 : i32} : (!future_global_read, !future_global_read, !rt_C_f32) -> !rt_C_f32
+          {sched.stage = 1 : i32} : (!future_global_read, !future_global_read, !rt_C_f32) -> !rt_C_f32
 
       scf.yield %new_acc : !rt_C_f32
     }
