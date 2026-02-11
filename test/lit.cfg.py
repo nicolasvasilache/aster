@@ -50,6 +50,10 @@ config.excludes = [
     "LICENSE.txt",
     "lit.cfg.py",
     "lit.site.cfg.py",
+    "__init__.py",
+    "flush_llc.py",
+    "test_mfma_e2e.py",
+    "test_utils.py",
 ]
 
 # test_exec_root: The root path where tests should be run.
