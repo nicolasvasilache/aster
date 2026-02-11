@@ -1,8 +1,11 @@
 """Unit tests for kittens/tiles_16x16.mlir library functions."""
 
 import os
+import sys
 from dataclasses import dataclass
 from typing import List
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "test"))
 
 import numpy as np
 import pytest
