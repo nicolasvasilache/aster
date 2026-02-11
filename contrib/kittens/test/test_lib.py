@@ -13,7 +13,7 @@ from integration_test.test_utils import (
     compile_mlir_file_to_asm,
     hsaco_file,
 )
-from aster.pass_pipelines import TEST_SYNCHRONOUS_SROA_PASS_PIPELINE
+from aster.pass_pipelines import TEST_SCF_PIPELINING_PASS_PIPELINE
 from mlir_kernels.common import get_library_paths
 
 # Test configuration
@@ -66,7 +66,7 @@ class TestKittensZeroC:
             asm_complete, module = compile_mlir_file_to_asm(
                 mlir_file,
                 kernel_name,
-                TEST_SYNCHRONOUS_SROA_PASS_PIPELINE,
+                TEST_SCF_PIPELINING_PASS_PIPELINE,
                 ctx,
                 library_paths=library_paths,
             )
@@ -123,7 +123,7 @@ class TestKittensLoadStoreA:
             asm_complete, module = compile_mlir_file_to_asm(
                 mlir_file,
                 kernel_name,
-                TEST_SYNCHRONOUS_SROA_PASS_PIPELINE,
+                TEST_SCF_PIPELINING_PASS_PIPELINE,
                 ctx,
                 library_paths=library_paths,
             )
@@ -180,7 +180,7 @@ class TestKittensMFMA:
             asm_complete, module = compile_mlir_file_to_asm(
                 mlir_file,
                 kernel_name,
-                TEST_SYNCHRONOUS_SROA_PASS_PIPELINE,
+                TEST_SCF_PIPELINING_PASS_PIPELINE,
                 ctx,
                 library_paths=library_paths,
             )
@@ -240,7 +240,7 @@ class TestKittensGEMM:
             asm_complete, module = compile_mlir_file_to_asm(
                 mlir_file,
                 kernel_name,
-                TEST_SYNCHRONOUS_SROA_PASS_PIPELINE,
+                TEST_SCF_PIPELINING_PASS_PIPELINE,
                 ctx,
                 library_paths=library_paths,
             )
