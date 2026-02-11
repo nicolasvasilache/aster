@@ -1,9 +1,11 @@
 """Unit tests for kittens/tiles_16x16.mlir library functions."""
 
 import os
-import pytest
-import numpy as np
+from dataclasses import dataclass
 from typing import List
+
+import numpy as np
+import pytest
 
 from aster import ir, utils
 from integration_test.test_utils import (
@@ -17,6 +19,20 @@ from mlir_kernels.common import get_library_paths
 # Test configuration
 MCPU = "gfx942"
 WAVEFRONT_SIZE = 64
+
+
+@dataclass
+class KittensRunConfig:
+    """Runtime config for kernel launches.
+
+    Mutated from __main__ for profiling.
+    """
+
+    num_blocks: int = 1
+    num_iterations: int = 1
+
+
+run_config = KittensRunConfig()
 
 
 def get_kittens_library_paths() -> List[str]:
@@ -73,8 +89,9 @@ class TestKittensZeroC:
                     output_args=[output],
                     mcpu=MCPU,
                     wavefront_size=WAVEFRONT_SIZE,
-                    grid_dim=(1, 1, 1),
+                    grid_dim=(run_config.num_blocks, 1, 1),
                     block_dim=(64, 1, 1),
+                    num_iterations=run_config.num_iterations,
                 )
 
         # All values should be zero
@@ -129,8 +146,9 @@ class TestKittensLoadStoreA:
                     output_args=[output_data],
                     mcpu=MCPU,
                     wavefront_size=WAVEFRONT_SIZE,
-                    grid_dim=(1, 1, 1),
+                    grid_dim=(run_config.num_blocks, 1, 1),
                     block_dim=(64, 1, 1),
+                    num_iterations=run_config.num_iterations,
                 )
 
         # Output should match input exactly (bit-for-bit)
@@ -185,8 +203,9 @@ class TestKittensMFMA:
                     output_args=[D_output],
                     mcpu=MCPU,
                     wavefront_size=WAVEFRONT_SIZE,
-                    grid_dim=(1, 1, 1),
+                    grid_dim=(run_config.num_blocks, 1, 1),
                     block_dim=(64, 1, 1),
+                    num_iterations=run_config.num_iterations,
                 )
 
         # Expected: D = A @ B^T (note: MFMA computes A @ B^T, not A @ B)
@@ -244,8 +263,9 @@ class TestKittensGEMM:
                     output_args=[C_output],
                     mcpu=MCPU,
                     wavefront_size=WAVEFRONT_SIZE,
-                    grid_dim=(1, 1, 1),
+                    grid_dim=(run_config.num_blocks, 1, 1),
                     block_dim=(64, 1, 1),
+                    num_iterations=run_config.num_iterations,
                 )
 
         # Expected: C = A @ B^T (MFMA computes A @ B^T)
@@ -254,7 +274,35 @@ class TestKittensGEMM:
 
 
 if __name__ == "__main__":
-    TestKittensZeroC().test_zero_C_produces_zeros()
-    TestKittensLoadStoreA().test_load_store_roundtrip()
-    TestKittensMFMA().test_mfma_matmul()
-    TestKittensGEMM().test_gemm_16x16x32()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run kittens tests")
+    parser.add_argument(
+        "--num-blocks",
+        type=int,
+        default=1,
+        help="Number of workgroups (default: 1, use 304 for full MI300 occupancy)",
+    )
+    parser.add_argument(
+        "--num-iterations",
+        type=int,
+        default=1,
+        help="Number of kernel launches per test (default: 1)",
+    )
+    cli_args = parser.parse_args()
+
+    # Override module-level config for all execute_kernel_and_verify calls
+    run_config.num_blocks = cli_args.num_blocks
+    run_config.num_iterations = cli_args.num_iterations
+
+    def run_test(test_fn, *args, **kwargs):
+        """Run a test, handling pytest.skip gracefully when running without pytest."""
+        try:
+            test_fn(*args, **kwargs)
+        except pytest.skip.Exception as e:
+            print(f"  SKIPPED: {e}")
+
+    run_test(TestKittensZeroC().test_zero_C_produces_zeros)
+    run_test(TestKittensLoadStoreA().test_load_store_roundtrip)
+    run_test(TestKittensMFMA().test_mfma_matmul)
+    run_test(TestKittensGEMM().test_gemm_16x16x32)
