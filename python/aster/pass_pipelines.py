@@ -264,6 +264,7 @@ TEST_LOOP_PASS_PIPELINE = builtin_module(
 TEST_SCF_PIPELINING_PASS_PIPELINE = builtin_module(
     PHASE_PRE_SCHEDULING_CLEANUP,
     PHASE_SCF_PIPELINING,
+    "aster-destructure-struct-iter-args", "canonicalize",
     PHASE_SROA,
     POST_SROA_CLEANUPS,
     "amdgcn-lds-alloc",
