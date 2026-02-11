@@ -28,6 +28,7 @@ profile_kernel() {
         -d "$trace_dir" \
         -- \
         "$PYTHON_BIN" "$TEST_SCRIPT" \
+        --test "$kernel" \
         --num-blocks "$NUM_BLOCKS" \
         --num-iterations 5
 }
@@ -37,4 +38,4 @@ profile_kernel() {
 # profile_kernel test_mfma
 # profile_kernel gemm_16x16x128
 # profile_kernel gemm_16x16x128_sched
-profile_kernel gemm_16x16xK
+profile_kernel gemm_16x16xK_k4096
