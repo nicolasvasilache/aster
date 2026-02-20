@@ -131,7 +131,12 @@ def SCFPipelineAsterSched : Pass<"aster-scf-pipeline"> {
       Kernel:   for i in [1, N): load(i), compute(i-1)
       Epilogue: compute(N-1)
   }];
+  let options = [
+    Option<"gcdUnroll", "gcd-unroll", "bool", /*default=*/"false",
+           "Unroll the kernel loop by the GCD of the pipeline stage values">,
+  ];
   let dependentDialects = [
+    "mlir::affine::AffineDialect",
     "mlir::scf::SCFDialect",
     "mlir::arith::ArithDialect",
     "mlir::aster::amdgcn::AMDGCNDialect",
