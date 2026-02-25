@@ -1,4 +1,5 @@
 // RUN: aster-opt --canonicalize --amdgcn-convert-waits %s | FileCheck %s
+// RUN: aster-opt --canonicalize --amdgcn-convert-waits=remove-cf-args=false %s | FileCheck %s --check-prefix=CHECK-KEEP-ARGS
 
 // CHECK-LABEL:   func.func @test_duplicated_waits() {
 // CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
@@ -18,8 +19,11 @@ func.func @test_duplicated_waits() {
 }
 
 // CHECK-LABEL:   func.func @test_pipelined_pattern(
+// CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} {
 // CHECK:             amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 2
 // CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
+// CHECK-KEEP-ARGS-LABEL:   func.func @test_pipelined_pattern(
+// CHECK-KEEP-ARGS: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args{{.*}} -> (!amdgcn.read_token<flat>, !amdgcn.read_token<flat>, !amdgcn.read_token<flat>) {
 func.func @test_pipelined_pattern(%arg0: !amdgcn.vgpr<[? + 2]>) {
   %0 = amdgcn.alloca : !amdgcn.vgpr
   %1 = amdgcn.alloca : !amdgcn.vgpr
@@ -51,6 +55,9 @@ func.func @test_escaped_waits_1(%arg0: !amdgcn.vgpr<[? + 2]>, %arg1: i1) {
 }
 
 // CHECK-LABEL:   func.func @test_if_flow_1(
+// CHECK-KEEP-ARGS-LABEL:   func.func @test_if_flow_1(
+// CHECK: scf.if %{{.*}} {
+// CHECK-KEEP-ARGS: scf.if %{{.*}} -> (!amdgcn.read_token<flat>) {
 // CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
 func.func @test_if_flow_1(%arg0: !amdgcn.vgpr<[? + 2]>, %arg1: i1) {
   %0 = amdgcn.alloca : !amdgcn.vgpr
@@ -67,6 +74,9 @@ func.func @test_if_flow_1(%arg0: !amdgcn.vgpr<[? + 2]>, %arg1: i1) {
 }
 
 // CHECK-LABEL:   func.func @test_if_flow_2(
+// CHECK-KEEP-ARGS-LABEL:   func.func @test_if_flow_2(
+// CHECK: scf.if %{{.*}} {
+// CHECK-KEEP-ARGS: scf.if %{{.*}} -> (!amdgcn.read_token<flat>) {
 // CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
 func.func @test_if_flow_2(%arg0: !amdgcn.vgpr<[? + 2]>, %arg1: i1) {
   %0 = amdgcn.alloca : !amdgcn.vgpr
@@ -85,6 +95,9 @@ func.func @test_if_flow_2(%arg0: !amdgcn.vgpr<[? + 2]>, %arg1: i1) {
 }
 
 // CHECK-LABEL:   func.func @test_if_flow_3(
+// CHECK-KEEP-ARGS-LABEL:   func.func @test_if_flow_3(
+// CHECK: scf.if %{{.*}} {
+// CHECK-KEEP-ARGS: scf.if %{{.*}} -> (!amdgcn.read_token<flat>) {
 // CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 1
 func.func @test_if_flow_3(%arg0: !amdgcn.vgpr<[? + 2]>, %arg1: i1) {
   %0 = amdgcn.alloca : !amdgcn.vgpr
@@ -167,5 +180,128 @@ func.func @test_counts_strength(%arg0: !amdgcn.vgpr<[? + 2]>) {
   %result_6, %token_7 = amdgcn.load global_load_dword dest %0 addr %arg0 : dps(!amdgcn.vgpr) ins(!amdgcn.vgpr<[? + 2]>) -> !amdgcn.read_token<flat>
   %result_8, %token_9 = amdgcn.load global_load_dword dest %0 addr %arg0 : dps(!amdgcn.vgpr) ins(!amdgcn.vgpr<[? + 2]>) -> !amdgcn.read_token<flat>
   amdgcn.wait vm_cnt 4 deps %token_5 : !amdgcn.read_token<flat>
+  return
+}
+
+// CHECK-LABEL:   func.func @test_mixed_iter_args(
+// CHECK-SAME:      %[[ADDR:.*]]: !amdgcn.vgpr<[? + 2]>) -> index {
+// CHECK:           %[[RESULT:.*]] = scf.for {{.*}} iter_args(%[[ACC:.*]] = %{{.*}}) -> (index) {
+// CHECK-NOT:         !amdgcn.read_token
+// CHECK:             amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
+// CHECK:             scf.yield %{{.*}} : index
+// CHECK:           return %[[RESULT]] : index
+// CHECK-KEEP-ARGS-LABEL:   func.func @test_mixed_iter_args(
+// CHECK-KEEP-ARGS:   scf.for {{.*}} iter_args(%{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (!amdgcn.read_token<flat>, index) {
+func.func @test_mixed_iter_args(%arg0: !amdgcn.vgpr<[? + 2]>) -> index {
+  %0 = amdgcn.alloca : !amdgcn.vgpr
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %result, %token = amdgcn.load global_load_dword dest %0 addr %arg0 : dps(!amdgcn.vgpr) ins(!amdgcn.vgpr<[? + 2]>) -> !amdgcn.read_token<flat>
+  %out:2 = scf.for %i = %c0 to %c4 step %c1 iter_args(%tok = %token, %acc = %c0) -> (!amdgcn.read_token<flat>, index) {
+    amdgcn.wait deps %tok : !amdgcn.read_token<flat>
+    %result2, %token2 = amdgcn.load global_load_dword dest %0 addr %arg0 : dps(!amdgcn.vgpr) ins(!amdgcn.vgpr<[? + 2]>) -> !amdgcn.read_token<flat>
+    %new_acc = arith.addi %acc, %c1 : index
+    scf.yield %token2, %new_acc : !amdgcn.read_token<flat>, index
+  }
+  amdgcn.wait deps %out#0 : !amdgcn.read_token<flat>
+  return %out#1 : index
+}
+
+// CHECK-LABEL:   func.func @cf_args(
+// CHECK:           %[[POISON:.*]] = ub.poison : !amdgcn.read_token<flat>
+// CHECK: ^{{.*}}:
+// CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
+// CHECK: ^{{.*}}:
+// CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
+// CHECK:           return %[[POISON]] : !amdgcn.read_token<flat>
+// CHECK-KEEP-ARGS-LABEL:   func.func @cf_args(
+// CHECK-KEEP-ARGS: cf.cond_br{{.*}}
+// CHECK-KEEP-ARGS: ^{{.*}}(%{{.*}}: !amdgcn.read_token<flat>):
+// CHECK-KEEP-ARGS: cf.cond_br{{.*}}
+// CHECK-KEEP-ARGS: ^{{.*}}(%{{.*}}: !amdgcn.read_token<flat>):
+func.func @cf_args(%arg0: !amdgcn.vgpr<[? + 2]>, %cond: i1)  -> !amdgcn.read_token<flat> {
+  %0 = amdgcn.alloca : !amdgcn.vgpr
+  %result, %token = amdgcn.load global_load_dword dest %0 addr %arg0 : dps(!amdgcn.vgpr) ins(!amdgcn.vgpr<[? + 2]>) -> !amdgcn.read_token<flat>
+  cf.cond_br %cond, ^bb1(%token : !amdgcn.read_token<flat>), ^bb2(%token : !amdgcn.read_token<flat>)
+^bb1(%1: !amdgcn.read_token<flat>):
+  amdgcn.wait deps %1 : !amdgcn.read_token<flat>
+  %result_0, %token_1 = amdgcn.load global_load_dword dest %0 addr %arg0 : dps(!amdgcn.vgpr) ins(!amdgcn.vgpr<[? + 2]>) -> !amdgcn.read_token<flat>
+  cf.cond_br %cond, ^bb1(%token_1 : !amdgcn.read_token<flat>), ^bb2 (%token_1 : !amdgcn.read_token<flat>)
+^bb2(%2: !amdgcn.read_token<flat>):
+  amdgcn.wait deps %2 : !amdgcn.read_token<flat>
+  %3 = scf.if %cond -> (!amdgcn.read_token<flat>) {
+    %result_2, %token_2 = amdgcn.load global_load_dword dest %0 addr %arg0 : dps(!amdgcn.vgpr) ins(!amdgcn.vgpr<[? + 2]>) -> !amdgcn.read_token<flat>
+    scf.yield %token_2 : !amdgcn.read_token<flat>
+  } else {
+    %result_2, %token_2 = amdgcn.load global_load_dword dest %0 addr %arg0 : dps(!amdgcn.vgpr) ins(!amdgcn.vgpr<[? + 2]>) -> !amdgcn.read_token<flat>
+    scf.yield %token_2 : !amdgcn.read_token<flat>
+  }
+  return %3 : !amdgcn.read_token<flat>
+}
+
+// -----
+// Tests for ops that consume poison token values.
+// -----
+
+// CHECK-LABEL:   func.func @wait_on_poison_read_token() {
+// CHECK:           %[[POISON:.*]] = ub.poison : !amdgcn.read_token<flat>
+// CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
+// CHECK:           return
+func.func @wait_on_poison_read_token() {
+  %poison = ub.poison : !amdgcn.read_token<flat>
+  amdgcn.wait deps %poison : !amdgcn.read_token<flat>
+  return
+}
+
+// CHECK-LABEL:   func.func @wait_on_poison_write_token() {
+// CHECK:           %[[POISON:.*]] = ub.poison : !amdgcn.write_token<flat>
+// CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
+// CHECK:           return
+func.func @wait_on_poison_write_token() {
+  %poison = ub.poison : !amdgcn.write_token<flat>
+  amdgcn.wait deps %poison : !amdgcn.write_token<flat>
+  return
+}
+
+// CHECK-LABEL:   func.func @wait_on_poison_lgkm() {
+// CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> lgkmcnt = 0
+// CHECK:           return
+func.func @wait_on_poison_lgkm() {
+  %poison_const = ub.poison : !amdgcn.read_token<constant>
+  %poison_shared = ub.poison : !amdgcn.read_token<shared>
+  amdgcn.wait deps %poison_const, %poison_shared : !amdgcn.read_token<constant>, !amdgcn.read_token<shared>
+  return
+}
+
+// CHECK-LABEL:   func.func @wait_on_mixed_real_and_poison(
+// CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
+// CHECK:           return
+func.func @wait_on_mixed_real_and_poison(%arg0: !amdgcn.vgpr<[? + 2]>) {
+  %0 = amdgcn.alloca : !amdgcn.vgpr
+  %result, %token = amdgcn.load global_load_dword dest %0 addr %arg0 : dps(!amdgcn.vgpr) ins(!amdgcn.vgpr<[? + 2]>) -> !amdgcn.read_token<flat>
+  %poison = ub.poison : !amdgcn.read_token<flat>
+  amdgcn.wait deps %token, %poison : !amdgcn.read_token<flat>, !amdgcn.read_token<flat>
+  return
+}
+
+// CHECK-LABEL:   func.func @for_with_poison_init(
+// CHECK:           scf.for {{.*}} {
+// CHECK:             amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
+// CHECK:           }
+// CHECK:           amdgcn.sopp.s_waitcnt <s_waitcnt> vmcnt = 0
+// CHECK:           return
+func.func @for_with_poison_init(%arg0: !amdgcn.vgpr<[? + 2]>) {
+  %0 = amdgcn.alloca : !amdgcn.vgpr
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %poison = ub.poison : !amdgcn.read_token<flat>
+  %out = scf.for %i = %c0 to %c4 step %c1 iter_args(%tok = %poison) -> (!amdgcn.read_token<flat>) {
+    amdgcn.wait deps %tok : !amdgcn.read_token<flat>
+    %result, %token = amdgcn.load global_load_dword dest %0 addr %arg0 : dps(!amdgcn.vgpr) ins(!amdgcn.vgpr<[? + 2]>) -> !amdgcn.read_token<flat>
+    scf.yield %token : !amdgcn.read_token<flat>
+  }
+  amdgcn.wait deps %out : !amdgcn.read_token<flat>
   return
 }
